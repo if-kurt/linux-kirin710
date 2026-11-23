@@ -653,6 +653,26 @@ config KK_SARJ_POLITIKA
 	  I2C backend (DT "karakutu,sarj-politika") and the chip watchdog layer:
 	  writes only 0x90 (CHG_EN), 0xE9 [1:0] (WDT 40 s) and 0xE8 b0 (feed).
 
+config KK_PIL_KORUMA
+	bool "Kara Kutu: low battery protection (G-6)"
+	depends on OF && CPU_FREQ && KK_SENSOR_OKUMA
+	help
+	  Kara Kutu (G54, G-6): reads battery V/I through kk_sensor_pil() (coul,
+	  read-only SPMI; QEMU: fake battery) and applies three levels: K1 cpufreq
+	  ceiling, K2 lowest OPP (+ uevent), K3 one-shot critical action (log only,
+	  reboot to a recovery target, or clean poweroff when VBUS is inferred
+	  absent). No hardware writes: the ceiling is a freq_qos request.
+
+config KK_PIL_KORUMA_YALNIZ_LOG
+	bool "Kara Kutu: low battery protection LOG ONLY (no actions compiled in)"
+	depends on KK_PIL_KORUMA
+	help
+	  Kara Kutu (G55, Beyin: "yalniz log kipi, eylem yok"): levels are computed
+	  and logged only. The cpufreq ceiling (freq_qos), the level uevent and the
+	  K3 actions (ksys_sync, kernel_restart, orderly_poweroff,
+	  kernel_power_off) are NOT compiled in; DT "karakutu,pil-kritik-eylem" is
+	  ignored (always "gunluk").
+
 config KK_SARJ_TEST
 	bool "Kara Kutu: charge policy TEST hooks (test image only)"
 	depends on KK_SARJ_POLITIKA

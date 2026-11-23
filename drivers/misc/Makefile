@@ -13,6 +13,7 @@ obj-$(CONFIG_KK_SENSOR_OKUMA)	+= kk-sensor-okuma.o
 obj-$(CONFIG_KK_I2C6_KAPI)	+= kk-i2c6-kapi.o
 obj-$(CONFIG_KK_HI6523_OKU)	+= kk-hi6523-oku.o
 obj-$(CONFIG_KK_SARJ_POLITIKA)	+= kk-sarj.o
+obj-$(CONFIG_KK_PIL_KORUMA)	+= kk-pil-koruma.o
 obj-$(CONFIG_KK_HI6523_DENEY)	+= kk-hi6523-deney.o
 obj-$(CONFIG_KK_GUC_TESHIS)	+= kk-guc-teshis.o
 obj-$(CONFIG_KK_RESET_NEDENI)	+= kk-reset-nedeni.o

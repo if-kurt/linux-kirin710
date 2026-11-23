@@ -730,6 +730,14 @@ config KK_SDIO_KAPI_PMIC_YAZ
 	  reads 0x3E and stops unless it is already 0x01. W1 approved (G47);
 	  default n, only the Faz B image variant enables it.
 
+config KK_SDIO_KAPI_SAHTE
+	bool "Kara Kutu: FAKE register model + RAM PMIC for the SDIO gate (QEMU only)"
+	depends on KK_SDIO_KAPI && MFD_SYSCON
+	help
+	  Kara Kutu (G45): QEMU-only state model for the fake RAM CRG/PL061
+	  blocks and a RAM syscon standing in for the SPMI PMIC. Never enable
+	  in a device image.
+
 config KK_HI1102_YUKLE
 	bool "Kara Kutu: Hi1102 ROM firmware loader (Wi-Fi M2; sysfs trigger only)"
 	depends on KK_SDIO_KAPI
@@ -804,6 +812,14 @@ config KK_HI1102_M3B
 	  HCC transmit whitelist (anything else stops), passive scan only
 	  (no probe request, connect, mgmt tx, AP, P2P). Requires
 	  KK_HI1102_PORT and KK_HI1102_M3A (#error otherwise).
+
+config KK_HI1102_YUKLE_SAHTE
+	bool "Kara Kutu: FAKE Hi1102 ROM model for the loader (QEMU only)"
+	depends on KK_HI1102_YUKLE && KK_SDIO_KAPI_SAHTE
+	help
+	  Kara Kutu (G48): routes the loader's SDIO primitives to an in-kernel
+	  state machine of the Hi1102 ROM protocol. Never enable in a device
+	  image.
 
 config KK_HI1102_M3C
 	bool "Kara Kutu: Hi1102 M3c (connect to one AP: open/WPA2-PSK, passive scan only)"

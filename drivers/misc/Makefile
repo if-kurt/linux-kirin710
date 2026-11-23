@@ -23,8 +23,10 @@ obj-$(CONFIG_KK_S1_SAHTE)	+= kk-s1-sahte.o
 obj-$(CONFIG_KK_I2C3_KAPI)	+= kk-i2c3-kapi.o
 obj-$(CONFIG_KK_LM36274_KK)	+= kk-lm36274.o
 obj-$(CONFIG_KK_SDIO_KAPI)	+= kk-sdio-kapi.o
+obj-$(CONFIG_KK_SDIO_KAPI_SAHTE)	+= kk-sdio-sahte.o
 # G48 M2a: Hi1102 ROM yükleyicisi (gömülü firmware; yollar CONFIG_KK_HI1102_FW_DIR) + yalnız QEMU sahte ROM modeli
 obj-$(CONFIG_KK_HI1102_YUKLE)	+= kk-hi1102-yukle.o
+obj-$(CONFIG_KK_HI1102_YUKLE_SAHTE)	+= kk-hi1102-sahte.o
 obj-$(CONFIG_KK_HI1102_PORT)	+= kk-wifi.o
 # G55 M3b: Huawei host katmanlari (port, gomulu)
 obj-$(CONFIG_KK_HI1102_M3B)	+= kk-hi1102-port/

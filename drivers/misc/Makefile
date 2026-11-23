@@ -23,8 +23,19 @@ obj-$(CONFIG_KK_S1_SAHTE)	+= kk-s1-sahte.o
 obj-$(CONFIG_KK_I2C3_KAPI)	+= kk-i2c3-kapi.o
 obj-$(CONFIG_KK_LM36274_KK)	+= kk-lm36274.o
 obj-$(CONFIG_KK_SDIO_KAPI)	+= kk-sdio-kapi.o
+# G48 M2a: Hi1102 ROM yükleyicisi (gömülü firmware; yollar CONFIG_KK_HI1102_FW_DIR) + yalnız QEMU sahte ROM modeli
+obj-$(CONFIG_KK_HI1102_YUKLE)	+= kk-hi1102-yukle.o
 # G55 M3b: Huawei host katmanlari (port, gomulu)
 obj-$(CONFIG_KK_HI1102_M3B)	+= kk-hi1102-port/
+# G49 M2b: KK_HI1102_YALNIZ_KIP1=y iken firmware nesnesi (kk-hi1102-fw.o, .incbin) DERLENMEZ, FW_DIR kullanılmaz
+ifneq ($(CONFIG_KK_HI1102_YALNIZ_KIP1),y)
+KK_H_FW := $(patsubst "%",%,$(CONFIG_KK_HI1102_FW_DIR))
+obj-$(CONFIG_KK_HI1102_YUKLE)	+= kk-hi1102-fw.o
+CFLAGS_kk-hi1102-yukle.o := -I$(KK_H_FW)
+AFLAGS_kk-hi1102-fw.o := -DKK_H_FW_0=\"$(KK_H_FW)/cr4_asic.bin\" -DKK_H_FW_1=\"$(KK_H_FW)/CPU_RAM_SCHED.bin\" -DKK_H_FW_2=\"$(KK_H_FW)/CPU_RAM_WBS.bin\"
+$(obj)/kk-hi1102-fw.o: $(KK_H_FW)/cr4_asic.bin $(KK_H_FW)/CPU_RAM_SCHED.bin $(KK_H_FW)/CPU_RAM_WBS.bin
+$(obj)/kk-hi1102-yukle.o: $(KK_H_FW)/kk-hi1102-fw-ozet.h
+endif
 obj-$(CONFIG_DUMMY_IRQ)		+= dummy-irq.o
 obj-$(CONFIG_ICS932S401)	+= ics932s401.o
 obj-$(CONFIG_LKDTM)		+= lkdtm/

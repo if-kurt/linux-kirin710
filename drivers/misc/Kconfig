@@ -730,6 +730,41 @@ config KK_SDIO_KAPI_PMIC_YAZ
 	  reads 0x3E and stops unless it is already 0x01. W1 approved (G47);
 	  default n, only the Faz B image variant enables it.
 
+config KK_HI1102_YUKLE
+	bool "Kara Kutu: Hi1102 ROM firmware loader (Wi-Fi M2; sysfs trigger only)"
+	depends on KK_SDIO_KAPI
+	select CRC32
+	select CRYPTO_LIB_SHA256 if !KK_HI1102_YALNIZ_KIP1
+	help
+	  Kara Kutu (G48, Wi-Fi M2a): minimal loader that talks to the Hi1102
+	  boot ROM over the SDIO function the kk-sdio-kapi card check found.
+	  Off unless the command line has kk_hi1102_yukle.ac=1; then only two
+	  sysfs files appear next to kk-sdio-kapi (no SDIO access at boot, no
+	  SDIO function driver is registered). Writing 1 to "yukle" runs the
+	  handshake (efuse EC READM + VERSION); writing 2 runs the full download
+	  (needs kk_hi1102_yukle.kip_azami=2 and real firmware). Once per boot.
+	  All card writes go through one gate limited to a compile time list;
+	  the command table is generated at build time from the 4.9 config.
+	  G50 (M2c): with the download path built, the embedded images are
+	  checked at run time by length, CRC32 and SHA-256 (lib/crypto) before
+	  any SDIO access; only the 261632 byte chunk size is accepted.
+
+config KK_HI1102_YALNIZ_KIP1
+	bool "Kara Kutu: Hi1102 loader, handshake only (M2b; no download code, no firmware)"
+	depends on KK_HI1102_YUKLE
+	help
+	  Kara Kutu (G49, Wi-Fi M2b): builds only mode 1 of kk-hi1102-yukle
+	  (enable fn1, block 512, interrupt mask, F0 0xF0 <- 0, READM efuse EC
+	  and VERSION). The download path (SETPM/WRITEM/FILES/QUIT, ready poll),
+	  the embedded firmware images and the full command table are NOT
+	  compiled; the gate's table has only the READM and VERSION texts.
+	  Writing 2 to "yukle" returns -EPERM.
+
+config KK_HI1102_FW_DIR
+	string "Directory with the Hi1102 images to embed (cr4_asic.bin, CPU_RAM_SCHED.bin, CPU_RAM_WBS.bin, kk-hi1102-fw-ozet.h)"
+	depends on KK_HI1102_YUKLE && !KK_HI1102_YALNIZ_KIP1
+	default ""
+
 config KK_HI1102_M3B
 	bool "Kara Kutu: Hi1102 M3b (port host layers on top of M3a: cfg80211 STA, passive scan only)"
 	depends on KK_SDIO_KAPI && MMC && CFG80211=y && !WILC1000_SDIO && !CFG80211_WEXT && !CFG80211_REQUIRE_SIGNED_REGDB

@@ -610,6 +610,30 @@ config MARVELL_CN10K_DPI
 	  To compile this driver as a module, choose M here: the module
 	  will be called mrvl_cn10k_dpi.
 
+config KK_I2C6_KAPI
+	bool "Kara Kutu: Kirin 710 i2c6 gate (read-only CRG/pinmux check)"
+	depends on OF && OF_IRQ && I2C_DESIGNWARE_PLATFORM
+	help
+	  Kara Kutu (G39): reads (never writes) the IOMCU CRG clock gate/reset
+	  status and the pinmux of i2c6; only if the bootloader left them usable
+	  is the (DT-disabled) designware i2c6 platform device created.
+
+config KK_HI6523_OKU
+	bool "Kara Kutu: hi6523 charger read-only logger"
+	depends on I2C && OF
+	help
+	  Kara Kutu (G39, phase 1): reads selected side-effect-free hi6523
+	  registers (as 4.9 does) once at probe, then every 30 s after a 60 s
+	  gap. Contains no register write path.
+
+config KK_HI6523_O1
+	bool "Kara Kutu: hi6523 reader also reads STATUS0 (0x06) and 0x8E"
+	depends on KK_HI6523_OKU
+	help
+	  Kara Kutu (G44, approval O1): adds the read-only STATUS0 (ACL/DPM/
+	  thermal regulation) and OTG_RESERVE2 (5V VDPM selection) registers
+	  to the hi6523 reader list. Both are read by 4.9 in normal operation.
+
 config KK_GUC_TESHIS
 	bool "Kara Kutu: read-only power state diagnosis dump"
 	depends on OF

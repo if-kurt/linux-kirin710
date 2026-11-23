@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Kara Kutu G48 P1 — üretim adayı DTB'si (build.sh p1). Taban = D1 DTS (kirin710-huawei-marie.dts, G47 S2) AYNEN +
+ * G47 S1'in i2c3 düğümü, i2c3 referans saati, i2c3 kapısı ve arka-isik@11 (kk-ddr-oy düğümü YOK) + aliases + model.
+ * Kaynak: 4.9 canlı DT (work/g17/dt/canli.dts): i2c@FDF0C000 :5016-5030 (SPI 0x51, clock-rate 109 MHz,
+ * reset-controller-reg <0x78 0x7c 0x80 7>), ti,lm36274 reg 0x11 :5188-5192, clk_i2c3 hi3xxx-clkgate <0x20 0x80>
+ * :10596-10603, pinmux@e896c000 gpio005/006_pmx_func <0x700 1>/<0x704 1>, pinmux@e896c800 gpio005/006_cfg_func
+ * (drive-strength <0x10 0x70>, pull yok). Açılışta çekirdek tarafında yazma YOK; yazmalar bekçinin A0 aşamasında
+ * (kullanıcı alanı sysfs: kapi <- ac, kk_arka_isik <- kapat).
+ */
+#include "kirin710-huawei-marie.dts"
+
+/ {
+	model = "Huawei P30 Lite (MAR-LX1A) - Kara Kutu (G48 P1: arka isik bekciyle kapanir (A0: i2c3 kapisi + LM36274 0x04/0x05 <- 0); G47 S2: schedutil + cpuidle bekcisi + pmsg + reset nedeni okuma; G45: Faz 3 sarj politikasi + WDT katmani + kapanis kancasi + i2c6 4.9 gibi acilir + hi6523 okuma + cpufreq + thermal 200 ms + sigorta + HS200 + Debian salt okunur)";
+
+	aliases {
+		/* G47: i2c6 bugünkü gibi 0 (0-006b yolu değişmesin); i2c3 sabit 3 (3-0011) */
+		i2c0 = &i2c6;
+		i2c3 = &i2c3;
+	};
+
+	clocks {
+		/* i2c3 referans saati (sabit; kernel saate dokunmaz). 4.9 sürücüsü clock-rate 109 MHz ister
+		 * (canlı DT 0x67f3540). Gerçek saat düşükse SCL yalnız yavaşlar (güvenli yön). */
+		i2c3clk: clk-i2c3 {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <109000000>;
+			clock-output-names = "clk_i2c3";
+		};
+	};
+
+	soc {
+		/* i2c3 — LM36274 (0x11) YALNIZ. status="disabled": of_platform OLUŞTURMAZ; kk-i2c3-kapi G1-G4'ü okur,
+		 * uygunsa (ya da bekçi A0'da 'ac' ile açtıktan sonra) kendisi oluşturur. resets/pinctrl/CRG saati yok.
+		 * Hattaki öbür aygıtlar (flaş LED, smartpa) TANIMLANMAZ; adres taraması yapan sürücü yok, i2c-dev kapalı.
+		 * ti,lm36274 compatible'ı kullanılmaz (ti-lmu yığını derlenmez). */
+		i2c3: i2c@fdf0c000 {
+			compatible = "snps,designware-i2c";
+			reg = <0x0 0xfdf0c000 0x0 0x1000>;
+			interrupts = <GIC_SPI 81 IRQ_TYPE_LEVEL_HIGH>;	/* canlı DT <0 0x51 4> */
+			clocks = <&i2c3clk>, <&apb_pclk>;
+			clock-names = "ref", "pclk";
+			clock-frequency = <100000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+
+			arka-isik@11 {
+				compatible = "karakutu,lm36274-kk";
+				reg = <0x11>;
+			};
+		};
+
+		i2c3-kapi {
+			compatible = "karakutu,kirin710-i2c3-kapi";
+			/* Tabanlar sürücüde derlenmiş sabitlerle karşılaştırılır; ofsetler sürücüde sabit:
+			 * CRG PEREN2 +0x20, PERCLKEN2 +0x28, PERSTAT2 +0x2c, PERRSTDIS2 +0x7c, PERRSTSTAT2 +0x80 (b7);
+			 * iomg +0/+4 (0x700/0x704), iocg +0/+4. Yazma yalnız sysfs 'ac' ile (4 girdilik beyaz liste, tek seferlik). */
+			reg = <0x0 0xfff35000 0x0 0x84>,	/* PERI CRG */
+			      <0x0 0xe896c700 0x0 0x8>,		/* iomg gpio005/006 */
+			      <0x0 0xe896cf00 0x0 0x8>;		/* iocg gpio005/006 */
+			karakutu,i2c = <&i2c3>;
+		};
+	};
+};

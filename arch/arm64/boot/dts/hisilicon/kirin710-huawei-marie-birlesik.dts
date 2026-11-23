@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Kara Kutu G49 3.1 — BİRLEŞİK ağaç DTB'si. Taban = P1 DTS (kirin710-huawei-marie-p1.dts: D1 + i2c3/kapı/arka-isik@11)
+ * AYNEN + G45/G47/G48 Wi-Fi M1 düğümleri (kirin710-huawei-marie-m1.dts'in #include sonrası gövdesi BAYT BAYT;
+ * build.sh denetler). İki dosya da kirin710-huawei-marie.dts'i içerdiği için m1.dts doğrudan içerilemez.
+ * Açılışta kapalı: bootargs'a kk_sdio_kapi.ac=1 / pmic_yaz=1 / kk_hi1102_yukle.ac=1 EKLENMEZ (build.sh denetler);
+ * eMMC yazma penceresi özellikleri YOK (yalnız e2 varyantı DTB'sinde, build.sh e2).
+ */
+#include "kirin710-huawei-marie-p1.dts"
+
+/ {
+	aliases {
+		mmc0 = &emmc;		/* G44: eMMC hep mmc0 */
+		mmc2 = &dwmmc2;		/* 4.9 ile aynı ad (mmc2 = hi_mci.2) */
+		mshc2 = &dwmmc2;	/* dw_mmc-k3 ctrl_id = 2 -> SDIO zamanlama satırı */
+	};
+
+	clocks {
+		/* 4.9 clk_sdio_sys 3,2 MHz (B1); CLKDIV19 b6 kapısı (kapı C2) + CLKDIV6 b6=0 (sys yolu) ile fiilen.
+		 * Sabit saat: set_rate değişmez, hata vermez; bus_hz = 3,2 MHz / 8 = 400 kHz. */
+		sdio_ciu: clk-sdio-ciu {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <3200000>;
+			clock-output-names = "kk_sdio_ciu";
+		};
+
+		/* hclk_sdio (yalnız bildirim; kapıyı kk-sdio-kapi açar, C1) */
+		sdio_biu: clk-sdio-biu {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <231716571>;
+			clock-output-names = "kk_sdio_biu";
+		};
+	};
+
+	soc {
+		/* G45 M1: dwmmc2 (stok "hisilicon,hi3660-dw-mshc" fc183000, SPI 140 = 4.9 <0 0x8c 4>).
+		 * status="disabled": of_platform OLUŞTURMAZ; aygıtı yalnız kk-sdio-kapi, bütün geri okumalar tuttuktan
+		 * sonra oluşturur. resets/pinctrl/vmmc/vqmmc/mmc-pwrseq/hisilicon,peripheral-syscon YOK (M1).
+		 * karakutu,sdio-yalniz + no-sd + no-mmc + non-removable (no-sdio yok): mmc filtresi "SDIO-yalnız"
+		 * kipi (G44 filtre yaması; yalnız CMD0/3/5/7/52/53). 400 kHz; HS/UHS yok. */
+		dwmmc2: mmc@fc183000 {
+			compatible = "hisilicon,hi3660-dw-mshc";
+			reg = <0x0 0xfc183000 0x0 0x1000>;
+			interrupts = <GIC_SPI 140 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&sdio_ciu>, <&sdio_biu>;
+			clock-names = "ciu", "biu";
+			fifo-depth = <0x100>;
+			bus-width = <4>;
+			max-frequency = <400000>;
+			non-removable;
+			no-sd;
+			no-mmc;
+			karakutu,sdio-yalniz;
+			status = "disabled";
+		};
+
+		/* G45 M1: kk-sdio-kapi (CONFIG_KK_SDIO_KAPI). cmdline kk_sdio_kapi.ac=1 yoksa hiçbir erişim yok.
+		 * Yazmalar sürücüdeki derlenmiş tabloda (W2-W7); DT yalnız blokları ve referansları verir.
+		 * Bölgeler talep edilmez. iocg-mmc1 ve iomg yalnız okunur. PMIC 0x3E yalnız okunur
+		 * (CONFIG_KK_SDIO_KAPI_PMIC_YAZ kapalı): 0x01 değilse kapı DUR der. G46 W1: seçenek derli VE
+		 * bootargs'ta kk_sdio_kapi.pmic_yaz=1 (yalnız Faz B DTB'si, build.sh fazb) ise 0x00 -> 0x01. */
+		sdio-kapi {
+			compatible = "karakutu,kirin710-sdio-kapi";
+			reg = <0x0 0xfff35000 0x0 0x1000>,	/* PERI CRG (PERSTAT7 0x42c'ye kadar okunur) */
+			      <0x0 0xfc182000 0x0 0x18>,	/* iomg-mmc1 gpio128-133 */
+			      <0x0 0xfc182800 0x0 0x18>,	/* iocg-mmc1 (M1a: yalnız okunur) */
+			      <0x0 0xe896c000 0x0 0x60>,	/* iomg; GPIO3_6 = +0x5c (yalnız okunur) */
+			      <0x0 0xe8a0e000 0x0 0x1000>;	/* gpio3 PL061 */
+			reg-names = "crg", "iomg-mmc1", "iocg-mmc1", "iomg", "gpio3";
+			karakutu,pmic = <&pmic>;	/* kk-spmi-syscon, sid 0; 0x3D/0x3E/0x3F okunur */
+			karakutu,mmc = <&dwmmc2>;
+			status = "okay";
+		};
+	};
+};

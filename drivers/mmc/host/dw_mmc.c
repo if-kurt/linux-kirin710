@@ -3193,6 +3193,8 @@ static void dw_mci_cmd11_timer(struct timer_list *t)
 	queue_work(system_bh_wq, &host->bh_work);
 }
 
+static unsigned long dw_mci_lat_uyari_j;	/* G59-L: son "Unexpected interrupt latency" kaydi (jiffies; 0 = hic) */
+
 static void dw_mci_cto_timer(struct timer_list *t)
 {
 	struct dw_mci *host = from_timer(host, t, cto_timer);
@@ -3212,7 +3214,11 @@ static void dw_mci_cto_timer(struct timer_list *t)
 	pending = mci_readl(host, MINTSTS); /* read-only mask reg */
 	if (pending & (DW_MCI_CMD_ERROR_FLAGS | SDMMC_INT_CMD_DONE)) {
 		/* The interrupt should fire; no need to act but we can warn */
-		dev_warn(host->dev, "Unexpected interrupt latency\n");
+		/* G59-L: yalniz kayit hiz siniri (en cok 300 sn'de 1 satir; davranis ayni, goto exit aynen). Cihazda Wi-Fi SDIO'da 10 dk'da ~14 satir. */
+		if (time_after(jiffies, READ_ONCE(dw_mci_lat_uyari_j) + 300 * HZ) || !READ_ONCE(dw_mci_lat_uyari_j)) {
+			WRITE_ONCE(dw_mci_lat_uyari_j, jiffies ?: 1);
+			dev_warn(host->dev, "Unexpected interrupt latency\n");
+		}
 		goto exit;
 	}
 	if (test_bit(EVENT_CMD_COMPLETE, &host->pending_events)) {

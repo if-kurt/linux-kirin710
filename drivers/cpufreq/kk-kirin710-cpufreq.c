@@ -21,6 +21,7 @@
 #include <linux/cpufreq.h>
 #include <linux/cpu.h>
 #include <linux/delay.h>
+#include <linux/jiffies.h>
 #include <linux/ktime.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
@@ -53,6 +54,16 @@ static DEFINE_MUTEX(kk_kilit);
 /* G37: yoklama 200 ms -> oy sayısı artar; geri okuma HER oyda yapılır, log satırı ise yalnız kümenin ilk 64 oyunda,
  * her FARKLI'da ve her 50. oyda (özet) yazılır (pstore konsolu açılış kanıtını taşırmasın). Toplamlar sysfs'te. */
 static unsigned int kk_oy_toplam, kk_uyusmaz_toplam, kk_en_uzun_us;
+/*
+ * G59-L: kayit hiz siniri. Oy yazimi her gecisten sonra sayilir (n_oy/uyusmaz/en uzun us DEGISMEZ); yalniz satir yazimi
+ * seyrelir: ilk 64 oy (acilis), sonra kumeler ortak en cok 60 sn'de 1 ozet satiri (icindeki [oy N, uyusmaz N] sayaclari
+ * toplami verir), uyusmazlik (FARKLI) satiri en cok 30 sn'de 1. Cihazda 10 dk'da ~130 satir (journal yazma oranini
+ * kaldiriyordu) -> en cok ~10 satir (acilis 64/kume haric). Cagrilar kk_kilit altinda serilesir (kilit gerekmez).
+ */
+#define KK_LOG_ARALIK_SN	60
+#define KK_LOG_UYUSMAZ_SN	30
+static unsigned long kk_son_log_j, kk_son_uyusmaz_j;
+static bool kk_log_var, kk_uyusmaz_var;
 module_param_named(oy_toplam, kk_oy_toplam, uint, 0444);
 module_param_named(uyusmaz_toplam, kk_uyusmaz_toplam, uint, 0444);
 module_param_named(en_uzun_us, kk_en_uzun_us, uint, 0444);
@@ -84,6 +95,7 @@ static void kk_oy_yaz(struct kk_kume *c, unsigned int khz, unsigned int eski_khz
 	ktime_t t0;
 	s64 us;
 	int i;
+	bool yaz_log = false;
 
 	if (oy > 0xff)
 		oy = 0xff;
@@ -108,10 +120,24 @@ static void kk_oy_yaz(struct kk_kume *c, unsigned int khz, unsigned int eski_khz
 		c->n_uyusmaz++;
 		kk_uyusmaz_toplam++;
 	}
-	if (c->n_oy <= 64 || alan != oy || !(c->n_oy % 50))
+	if (c->n_oy <= 64) {
+		yaz_log = true;
+	} else if (alan != oy) {
+		if (!kk_uyusmaz_var || time_after(jiffies, kk_son_uyusmaz_j + KK_LOG_UYUSMAZ_SN * HZ)) {
+			yaz_log = true;
+			kk_uyusmaz_var = true;
+			kk_son_uyusmaz_j = jiffies;
+		}
+	} else if (!kk_log_var || time_after(jiffies, kk_son_log_j + KK_LOG_ARALIK_SN * HZ)) {
+		yaz_log = true;
+	}
+	if (yaz_log) {
+		kk_log_var = true;
+		kk_son_log_j = jiffies;
 		dev_info(kk_dev, "kk: cpufreq: %s %u -> %u kHz: oy %u (0x%03x <- 0x%08x, geri 0x%08x); 0x2dc=0x%08x alan=%u beklenen=%u %s (%lld us) [oy %u, uyusmaz %u]\n",
 			 c->ad, eski_khz, khz, oy, c->oy_reg, yaz, oyreg, ham, alan, oy,
 			 alan == oy ? "AYNI" : "FARKLI", us, c->n_oy, c->n_uyusmaz);
+	}
 }
 
 static int kk_target_index(struct cpufreq_policy *policy, unsigned int index)

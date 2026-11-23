@@ -645,6 +645,23 @@ config KK_HI6523_DENEY
 	  by the driver itself within 3 min. Adds the only hi6523 write path
 	  (register 0x90). Not in the phase 1 device image.
 
+config KK_SARJ_POLITIKA
+	bool "Kara Kutu: charge policy state machine"
+	depends on KK_SARJ_SAHTE || (KK_HI6523_OKU && KK_SENSOR_OKUMA)
+	help
+	  Kara Kutu (G39): OCV band charge policy. G42 (phase 3): with the hi6523
+	  I2C backend (DT "karakutu,sarj-politika") and the chip watchdog layer:
+	  writes only 0x90 (CHG_EN), 0xE9 [1:0] (WDT 40 s) and 0xE8 b0 (feed).
+
+config KK_SARJ_TEST
+	bool "Kara Kutu: charge policy TEST hooks (test image only)"
+	depends on KK_SARJ_POLITIKA
+	help
+	  Kara Kutu (G42): kernel command line overrides kk_sarj.test_alt_mv,
+	  test_ust_mv, test_pencere_sn, test_dinlenme_sn and the sysfs hook
+	  "test_besleme_kes" (stop feeding the chip watchdog without touching
+	  CHG_EN). Never in the production image.
+
 config KK_HI6523_O1
 	bool "Kara Kutu: hi6523 reader also reads STATUS0 (0x06) and 0x8E"
 	depends on KK_HI6523_OKU

@@ -691,6 +691,17 @@ static ssize_t blkdev_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	if (!iov_iter_count(from))
 		return 0;
 
+#ifdef CONFIG_KK_EMMC_YAZMA
+	/*
+	 * Kara Kutu (G53 A12): pencere tanımlı diskte [ki_pos, ki_pos + say) pencereye (açık, sayfa taneciğine
+	 * yuvarlanmış) tam sığmıyorsa veri sayfa önbelleğine girmeden -EPERM. Tamponlu, O_DIRECT ve O_DIRECT'in
+	 * tamponlu geri düşüşü (direct_write_fallback) hepsi buradan geçer; kırpmadan ÖNCEKİ uzunlukla denetlenir.
+	 */
+	ret = kk_bdev_yaz_kapi(bdev, iocb->ki_pos, iov_iter_count(from), KK_A12_YAZ);
+	if (ret)
+		return ret;
+#endif
+
 	if (iocb->ki_pos >= size)
 		return -ENOSPC;
 
@@ -825,6 +836,16 @@ static long blkdev_fallocate(struct file *file, int mode, loff_t start,
 	if ((start | len) & (bdev_logical_block_size(bdev) - 1))
 		return -EINVAL;
 
+#ifdef CONFIG_KK_EMMC_YAZMA
+	/* Kara Kutu (G53 A12): sayfa önbelleği boşaltılmadan / G/Ç üretilmeden önce. PUNCH_HOLE = silme ailesi. */
+	if (mode & (FALLOC_FL_ZERO_RANGE | FALLOC_FL_PUNCH_HOLE)) {
+		error = kk_bdev_yaz_kapi(bdev, start, len,
+					 (mode & FALLOC_FL_PUNCH_HOLE) ? KK_A12_SIL : KK_A12_SIFIR);
+		if (error)
+			return error;
+	}
+#endif
+
 	inode_lock(inode);
 	filemap_invalidate_lock(inode->i_mapping);
 
@@ -868,6 +889,21 @@ static int blkdev_mmap(struct file *file, struct vm_area_struct *vma)
 
 	if (bdev_read_only(I_BDEV(bd_inode)))
 		return generic_file_readonly_mmap(file, vma);
+
+#ifdef CONFIG_KK_EMMC_YAZMA
+	/*
+	 * Kara Kutu (G53 A12): paylaşımlı yazılabilir eşleme sayfa önbelleğini write_iter'ı atlayarak kirletir
+	 * (mremap ile aralık da büyüyebilir) -> pencere tanımlı diskte aralıktan bağımsız red. VM_MAYWRITE:
+	 * sonradan mprotect(PROT_WRITE) yolunu da kapatır. Özel (MAP_PRIVATE) eşleme önbelleği kirletmez.
+	 */
+	if ((vma->vm_flags & VM_SHARED) && (vma->vm_flags & VM_MAYWRITE)) {
+		int err = kk_bdev_yaz_kapi(I_BDEV(bd_inode), (u64)vma->vm_pgoff << PAGE_SHIFT,
+					   vma->vm_end - vma->vm_start, KK_A12_MMAP);
+
+		if (err)
+			return err;
+	}
+#endif
 
 	return generic_file_mmap(file, vma);
 }

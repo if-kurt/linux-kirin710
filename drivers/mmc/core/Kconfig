@@ -91,3 +91,28 @@ config MMC_CRYPTO
 	  Enabling this makes it possible for the kernel to use the crypto
 	  capabilities of the MMC device (if present) to perform crypto
 	  operations on data being transferred to/from the device.
+
+config KK_EMMC_YAZMA
+	bool "Kara Kutu G46: eMMC yazma penceresi (iki katman, varsayilan KAPALI)"
+	depends on MMC_BLOCK
+	default n
+	help
+	  Kati moddaki eMMC'ye yalniz DT "karakutu,yazma-araligi" ile tanimli,
+	  acilista GPT ve EXT_CSD ile capraz dogrulanmis TEK bir LBA penceresine
+	  yazma (CMD24/CMD25) izni. Iki bagimsiz katman: blok katmani
+	  (mmc_blk_mq_issue_rq) ve mmc core komut filtresi. Pencere yalniz
+	  /sys/block/mmcblkN/kk_yazma'ya "ac" yazilinca acilir; "kapat" geri
+	  donussuzdur. Boot/RPMB/GP erisimi, discard/trim/erase, guvenilir
+	  yazma/FUA, veri etiketi ve onbellek her durumda kapali.
+	  DT'de pencere yoksa davranis bu secenek kapaliymis gibidir.
+
+config KK_EMMC_YAZMA_SINAMA
+	bool "Kara Kutu G46: eMMC yazma penceresi QEMU sinamasi (CIHAZDA ASLA)"
+	depends on KK_EMMC_YAZMA
+	default n
+	help
+	  Yalniz QEMU (sdhci-pci + sd-card) sinamasi: SD host'ta da DT penceresi
+	  okunur (PCI cocuk dugumu), SD kart kabul edilir, SD'ye sahte
+	  "onbelleksiz, bolumsuz" EXT_CSD verilir ve mmc_core.kk_sinama_atla
+	  ile katmanlardan biri atlanabilir. Cihaz derlemesinde kapali olmali;
+	  build.sh cihaz .config'inde bu sembolun bulunmadigini denetler.

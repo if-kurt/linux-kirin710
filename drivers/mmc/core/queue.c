@@ -363,7 +363,11 @@ static struct gendisk *mmc_alloc_disk(struct mmc_queue *mq,
 	};
 	struct gendisk *disk;
 
+#ifdef CONFIG_KK_EMMC_YAZMA
+	if (mmc_can_erase(card) && !kk_mmc_yaz_kisit(host))	/* G46: pencereli katı host'ta silme ailesi bildirilmez */
+#else
 	if (mmc_can_erase(card))
+#endif
 		mmc_queue_setup_discard(card, &lim);
 
 	lim.max_hw_sectors = min(host->max_blk_count, host->max_req_size / 512);

@@ -218,6 +218,15 @@ struct gendisk {
 	 * devices that do not have multiple independent access ranges.
 	 */
 	struct blk_independent_access_ranges *ia_ranges;
+#ifdef CONFIG_KK_EMMC_YAZMA
+	/*
+	 * Kara Kutu (G53 A12): bdev yazma girişi kapısı (block/fops.c, block/ioctl.c; kk_bdev_yaz_kapi).
+	 * NULL = disk pencere tanımsız (bugünkü davranış). Yalnız mmc block, DT'de pencere tanımlı ana alan
+	 * diskinde açılışta bir kez kurar. Dönüş 0 (izin) ya da -EPERM (veri sayfa önbelleğine girmeden).
+	 * Struct'ın SONUNDA: mevcut alanların ofsetleri değişmez.
+	 */
+	int (*kk_yaz_kapi)(struct block_device *bdev, u64 pos, u64 say, unsigned int tur);
+#endif
 };
 
 /**
@@ -830,6 +839,22 @@ static inline int bdev_read_only(struct block_device *bdev)
 {
 	return bdev_test_flag(bdev, BD_READ_ONLY) || get_disk_ro(bdev->bd_disk);
 }
+
+#ifdef CONFIG_KK_EMMC_YAZMA
+/* Kara Kutu (G53 A12): kapı türleri (drivers/mmc/core/block.c KK-G53-A12-BIRIM bölgesi aynı değerleri kullanır) */
+#define KK_A12_YAZ	0u	/* write_iter: write/pwrite/pwritev(2)/aio/splice/sendfile/loop (tamponlu ve O_DIRECT) */
+#define KK_A12_SIFIR	1u	/* BLKZEROOUT, fallocate ZERO_RANGE */
+#define KK_A12_SIL	2u	/* BLKDISCARD, BLKSECDISCARD, uring discard, fallocate PUNCH_HOLE */
+#define KK_A12_MMAP	3u	/* paylaşımlı + yazılabilir (VM_SHARED|VM_MAYWRITE) mmap */
+#define KK_A12_TUR_SAYI	4u
+/* pos, say: bdev içi bayt. Kapı kurulu değilse 0 (bugünkü davranış). */
+static inline int kk_bdev_yaz_kapi(struct block_device *bdev, u64 pos, u64 say, unsigned int tur)
+{
+	int (*f)(struct block_device *, u64, u64, unsigned int) = READ_ONCE(bdev->bd_disk->kk_yaz_kapi);
+
+	return f ? f(bdev, pos, say, tur) : 0;
+}
+#endif
 
 bool set_capacity_and_notify(struct gendisk *disk, sector_t size);
 void disk_force_media_change(struct gendisk *disk);

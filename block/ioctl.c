@@ -140,6 +140,11 @@ static int blk_ioctl_discard(struct block_device *bdev, blk_mode_t mode,
 	err = blk_validate_byte_range(bdev, start, len);
 	if (err)
 		return err;
+#ifdef CONFIG_KK_EMMC_YAZMA
+	err = kk_bdev_yaz_kapi(bdev, start, len, KK_A12_SIL);	/* Kara Kutu (G53 A12): önbellek boşaltılmadan */
+	if (err)
+		return err;
+#endif
 
 	inode_lock(bdev->bd_mapping->host);
 	filemap_invalidate_lock(bdev->bd_mapping);
@@ -199,6 +204,11 @@ static int blk_ioctl_secure_erase(struct block_device *bdev, blk_mode_t mode,
 	if (check_add_overflow(start, len, &end) ||
 	    end > bdev_nr_bytes(bdev))
 		return -EINVAL;
+#ifdef CONFIG_KK_EMMC_YAZMA
+	err = kk_bdev_yaz_kapi(bdev, start, len, KK_A12_SIL);	/* Kara Kutu (G53 A12) */
+	if (err)
+		return err;
+#endif
 
 	inode_lock(bdev->bd_mapping->host);
 	filemap_invalidate_lock(bdev->bd_mapping);
@@ -237,6 +247,11 @@ static int blk_ioctl_zeroout(struct block_device *bdev, blk_mode_t mode,
 		return -EINVAL;
 	if (end < start)
 		return -EINVAL;
+#ifdef CONFIG_KK_EMMC_YAZMA
+	err = kk_bdev_yaz_kapi(bdev, start, len, KK_A12_SIFIR);	/* Kara Kutu (G53 A12) */
+	if (err)
+		return err;
+#endif
 
 	/* Invalidate the page cache, including dirty pages */
 	inode_lock(bdev->bd_mapping->host);
@@ -805,6 +820,11 @@ static int blkdev_cmd_discard(struct io_uring_cmd *cmd,
 	err = blk_validate_byte_range(bdev, start, len);
 	if (err)
 		return err;
+#ifdef CONFIG_KK_EMMC_YAZMA
+	err = kk_bdev_yaz_kapi(bdev, start, len, KK_A12_SIL);	/* Kara Kutu (G53 A12) */
+	if (err)
+		return err;
+#endif
 
 	err = filemap_invalidate_pages(bdev->bd_mapping, start,
 					start + len - 1, nowait);

@@ -80,6 +80,13 @@ static int init_state_node(struct cpuidle_state *idle_state,
 	if (of_property_read_bool(state_node, "local-timer-stop"))
 		idle_state->flags |= CPUIDLE_FLAG_TIMER_STOP;
 	/*
+	 * Kara Kutu G45: "karakutu,varsayilan-kapali" -> durum açılışta kapalı (CPUIDLE_FLAG_OFF =
+	 * DISABLED_BY_USER, cpuidle.c:649-650). Yalnız çalışırken sysfs stateN/disable=0 ile açılır;
+	 * reboot'ta yine kapalı başlar (kalıcı ayar yok).
+	 */
+	if (of_property_read_bool(state_node, "karakutu,varsayilan-kapali"))
+		idle_state->flags |= CPUIDLE_FLAG_OFF;
+	/*
 	 * TODO:
 	 *	replace with kstrdup and pointer assignment when name
 	 *	and desc become string pointers

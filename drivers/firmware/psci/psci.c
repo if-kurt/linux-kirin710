@@ -172,12 +172,19 @@ int psci_set_osi_mode(bool enable)
 	return psci_to_linux_errno(err);
 }
 
+/*
+ * Kara Kutu G45: DT /cpus/idle-states düğümünde "karakutu,cpu-suspend-hvc" varsa YALNIZ CPU_SUSPEND hvc ile çağrılır
+ * (4.9 canlı DT: method "hvc", cpu_suspend 0xc4000001 -> HHEE üzerinden). Diğer bütün PSCI çağrıları
+ * (CPU_ON, SYSTEM_RESET, FEATURES...) ana hatta kanıtlanmış conduit'te (smc) kalır.
+ */
+static psci_fn *kk_cpu_suspend_fn;
+
 static __always_inline int
 __psci_cpu_suspend(u32 fn, u32 state, unsigned long entry_point)
 {
 	int err;
 
-	err = invoke_psci_fn(fn, state, entry_point, 0);
+	err = (kk_cpu_suspend_fn ? kk_cpu_suspend_fn : invoke_psci_fn)(fn, state, entry_point, 0);
 	return psci_to_linux_errno(err);
 }
 
@@ -683,7 +690,34 @@ static int __init psci_0_2_init(const struct device_node *np)
 	 * can be carried out according to the specific version reported
 	 * by firmware
 	 */
-	return psci_probe();
+	err = psci_probe();
+	if (err)
+		return err;
+
+	/* Kara Kutu G45 (Y2): CPU_SUSPEND biçimi loglanır; 4.9 parametreleri ORİJİNAL biçimde (0x10000 / 0x1010000). */
+	pr_info("kk: psci: FEATURES(CPU_SUSPEND)=0x%x -> %s bicim\n", psci_cpu_suspend_feature,
+		psci_has_ext_power_state() ? "GENISLETILMIS" : "orijinal");
+	{
+		/* bayrak /cpus/idle-states düğümünde (QEMU /psci düğümünü kendisi yeniden yazdığı için orada değil) */
+		struct device_node *idn = of_find_node_by_path("/cpus/idle-states");
+		bool hvc = idn && of_property_read_bool(idn, "karakutu,cpu-suspend-hvc");
+
+		of_node_put(idn);
+		if (!hvc)
+			return 0;
+	}
+	{
+		if (psci_has_ext_power_state()) {
+			/* 4.9 parametreleri yanlış yorumlanır (bağlam kaybı biti 30 sanılır): cpuidle kaydolmasın */
+			psci_ops.cpu_suspend = NULL;
+			pr_warn("kk: psci: genisletilmis StateID bicimi; 4.9 parametreleriyle uyumsuz -> CPU_SUSPEND KAPALI (cpuidle-psci kaydolmaz)\n");
+		} else {
+			kk_cpu_suspend_fn = __invoke_psci_fn_hvc;
+			pr_info("kk: psci: CPU_SUSPEND hvc ile (4.9 gibi); diger cagrilar %s\n",
+				invoke_psci_fn == __invoke_psci_fn_hvc ? "hvc" : "smc");
+		}
+	}
+	return 0;
 }
 
 /*

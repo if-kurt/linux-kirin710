@@ -9,6 +9,7 @@ obj-$(CONFIG_AD525X_DPOT)	+= ad525x_dpot.o
 obj-$(CONFIG_AD525X_DPOT_I2C)	+= ad525x_dpot-i2c.o
 obj-$(CONFIG_AD525X_DPOT_SPI)	+= ad525x_dpot-spi.o
 obj-$(CONFIG_ATMEL_SSC)		+= atmel-ssc.o
+obj-$(CONFIG_KK_SENSOR_OKUMA)	+= kk-sensor-okuma.o
 obj-$(CONFIG_KK_I2C6_KAPI)	+= kk-i2c6-kapi.o
 obj-$(CONFIG_KK_HI6523_OKU)	+= kk-hi6523-oku.o
 obj-$(CONFIG_KK_GUC_TESHIS)	+= kk-guc-teshis.o

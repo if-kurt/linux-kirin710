@@ -610,6 +610,16 @@ config MARVELL_CN10K_DPI
 	  To compile this driver as a module, choose M here: the module
 	  will be called mrvl_cn10k_dpi.
 
+config KK_SENSOR_OKUMA
+	bool "Kara Kutu: Kirin 710 read-only sensor log (coul V/I, CPU vote)"
+	depends on OF && SPMI && MFD_SYSCON
+	help
+	  Kara Kutu (G34/G35): logs battery voltage/current (hi6555v200 coul, SPMI reads),
+	  the PMCTRL CPU frequency vote, battery temperature (the exact 4.9 HKADC request
+	  to LPM3 over IPC mailbox-16/0, at most once per 30 s) and SoC temperatures
+	  (the 4.9 SMC 0xc5009900), and reboots to the bootloader when a temperature
+	  fuse trips. Never writes PMIC or charger registers.
+
 config KK_I2C6_KAPI
 	bool "Kara Kutu: Kirin 710 i2c6 gate (read-only CRG/pinmux check)"
 	depends on OF && OF_IRQ && I2C_DESIGNWARE_PLATFORM

@@ -109,6 +109,14 @@ config USB_DWC3_MESON_G12A
 	  Support USB2/3 functionality in Amlogic G12A platforms.
 	  Say 'Y' or 'M' if you have one such device.
 
+config USB_DWC3_KK_KIRIN710
+	bool "Kara Kutu: HiSilicon Kirin 710 USB2 glue (4.9 nov sequence)"
+	depends on OF && MFD_SYSCON && SPMI
+	help
+	  Kara Kutu (G32): Kirin 710 DWC3 glue. Releases clocks/resets/PHY and fakes
+	  VBUS exactly like the 4.9 vendor dwc3-nov driver, then creates the
+	  snps,dwc3 child. Never writes PMIC, charger or Type-C registers.
+
 config USB_DWC3_OF_SIMPLE
 	tristate "Generic OF Simple Glue Layer"
 	depends on OF && COMMON_CLK

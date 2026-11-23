@@ -636,6 +636,14 @@ config KK_HI6523_OKU
 	  registers (as 4.9 does) once at probe, then every 30 s after a 60 s
 	  gap. Contains no register write path.
 
+config KK_SARJ_SAHTE
+	bool "Kara Kutu: FAKE hi6523 + battery model (QEMU only)"
+	depends on OF
+	help
+	  Kara Kutu (G39): in-memory fake charger chip and battery used to test
+	  the charge policy in QEMU. Never touches hardware. Never enable in the
+	  device image.
+
 config KK_HI6523_DENEY
 	bool "Kara Kutu: phase 2 one-shot CHG_EN experiment (sysfs)"
 	depends on KK_HI6523_OKU || KK_SARJ_SAHTE
@@ -729,6 +737,14 @@ config KK_LM36274_KK
 	  never read. sysfs "kk_arka_isik" accepts only "kapat": 0x04 <- 0 and
 	  0x05 <- 0 (compiled whitelist {0x04<-0, 0x05<-0}), each read back.
 	  There is no restore path; reboot restores the bootloader value.
+
+config KK_S1_SAHTE
+	bool "Kara Kutu: S1 FAKE i2c3/LM36274 adapter and fake bases (QEMU only)"
+	depends on I2C && OF
+	help
+	  Kara Kutu (G47 S1): in-memory fake i2c3 bus with a fake LM36274 at
+	  0x11, and acceptance of QEMU RAM addresses in the i2c3 gate. Never
+	  enable in a device image.
 
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"

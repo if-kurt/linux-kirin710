@@ -829,6 +829,15 @@ config MMC_DW_K3
 	  Synopsys DesignWare Memory Card Interface driver. Select this option
 	  for platforms based on Hisilicon K3 SoC's.
 
+config KK_DWMMC_NO_LOW_PWR
+	bool "Kara Kutu: DT karakutu,no-low-pwr ile dw_mmc LOW_PWR kapali (G51 M2c-B)"
+	depends on MMC_DW
+	default n
+	help
+	  Kara Kutu G51 M2c-B. Secilirse ve dw_mmc dugumunde "karakutu,no-low-pwr" ozelligi varsa slot
+	  DW_MMC_CARD_NO_LOW_PWR ile baslar: CLKENA'ya LOW_PWR (b16) yazilmaz (4.9 caps-wifi-no-lowpwr karsiligi).
+	  Ozellik yalniz mmc2 (dwmmc2) dugumunde. Kapaliyken dw_mmc.o degismez.
+
 config MMC_DW_PCI
 	tristate "Synopsys Designware MCI support on PCI bus"
 	depends on MMC_DW && PCI

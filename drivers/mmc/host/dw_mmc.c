@@ -3031,7 +3031,7 @@ static int dw_mci_init_slot(struct dw_mci *host)
 	if (!mmc->ocr_avail)
 		mmc->ocr_avail = MMC_VDD_32_33 | MMC_VDD_33_34;
 
-	ret = mmc_of_parse(mmc);
+	ret = kk_dwmmc_no_low_pwr(host, slot, mmc_of_parse(mmc));
 	if (ret)
 		goto err_host_allocated;
 

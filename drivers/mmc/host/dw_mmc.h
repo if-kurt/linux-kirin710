@@ -616,4 +616,27 @@ struct dw_mci_drv_data {
 	u32		(*get_drto_clks)(struct dw_mci *host);
 	void		(*hw_reset)(struct dw_mci *host);
 };
+
+/*
+ * Kara Kutu G51 M2c-B (Furkan onayı "B"): 4.9 DT'sindeki caps-wifi-no-lowpwr karşılığı. CONFIG_KK_DWMMC_NO_LOW_PWR=y
+ * VE düğümde "karakutu,no-low-pwr" varsa slot DW_MMC_CARD_NO_LOW_PWR bitiyle başlar -> dw_mci_setup_bus() CLKENA'ya
+ * LOW_PWR (b16) koymaz: CLKENA = SDMMC_CLKEN_ENABLE << 0 = 0x00000001 (kart saati boşta durmaz). Seçenek kapalıyken
+ * makro yalnız mmc_of_parse() dönüşünü geçirir (dw_mmc.o G50 ile bayt bayt aynı; satır numaraları değişmez: bu blok
+ * dosyanın sonunda, dw_mmc.c'deki çağrı aynı satırda).
+ */
+#if IS_ENABLED(CONFIG_KK_DWMMC_NO_LOW_PWR)
+#include <linux/of.h>
+static inline int kk_dwmmc_no_low_pwr(struct dw_mci *host, struct dw_mci_slot *slot, int ret)
+{
+	if (!ret && host->dev->of_node && of_property_read_bool(host->dev->of_node, "karakutu,no-low-pwr")) {
+		set_bit(DW_MMC_CARD_NO_LOW_PWR, &slot->flags);
+		dev_info(host->dev,
+			 "kk: dwmmc: LOW_PWR KAPALI (DT karakutu,no-low-pwr; 4.9 caps-wifi-no-lowpwr): CLKENA = 0x%08x (b0 ENABLE=1, b16 LOW_PWR=0)\n",
+			 (u32)(SDMMC_CLKEN_ENABLE << slot->id));
+	}
+	return ret;
+}
+#else
+#define kk_dwmmc_no_low_pwr(host, slot, ret)	(ret)
+#endif
 #endif /* _DW_MMC_H_ */

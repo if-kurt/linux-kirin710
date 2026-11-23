@@ -709,6 +709,27 @@ config KK_RESET_NEDENI
 	  and SCTRL SCSYSSTAT (0x004, through the SCTRL syscon regmap), and logs
 	  them. Writing SCSYSSTAT resets the SoC; this driver has no write path.
 
+config KK_I2C3_KAPI
+	bool "Kara Kutu: Kirin 710 i2c3 gate (G1-G4 read; session-triggered open)"
+	depends on OF && OF_IRQ && I2C_DESIGNWARE_PLATFORM
+	help
+	  Kara Kutu (G47 S1, G48 P1): reads the PERI CRG i2c3 clock gate/reset
+	  status, pinmux and pinconf. If all are as expected the (DT-disabled)
+	  designware i2c3 device is created at boot without any write.
+	  Otherwise nothing is written at boot; writing "ac" to sysfs "kapi"
+	  (user space, kk-idle-bekci A0) opens only i2c3's own clock/reset/pinmux
+	  bits (4-entry compiled whitelist, each at most once, read back).
+
+config KK_LM36274_KK
+	bool "Kara Kutu: LM36274 backlight reader + brightness-0 trigger (production)"
+	depends on I2C && OF
+	help
+	  Kara Kutu (G48 P1, production): reads LM36274 (address 0x11 only)
+	  registers at probe without writing; the fault flag register 0x0F is
+	  never read. sysfs "kk_arka_isik" accepts only "kapat": 0x04 <- 0 and
+	  0x05 <- 0 (compiled whitelist {0x04<-0, 0x05<-0}), each read back.
+	  There is no restore path; reboot restores the bootloader value.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"

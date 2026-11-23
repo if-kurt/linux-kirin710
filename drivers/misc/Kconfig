@@ -730,6 +730,64 @@ config KK_SDIO_KAPI_PMIC_YAZ
 	  reads 0x3E and stops unless it is already 0x01. W1 approved (G47);
 	  default n, only the Faz B image variant enables it.
 
+config KK_HI1102_M3B
+	bool "Kara Kutu: Hi1102 M3b (port host layers on top of M3a: cfg80211 STA, passive scan only)"
+	depends on KK_SDIO_KAPI && MMC && CFG80211=y && !WILC1000_SDIO && !CFG80211_WEXT && !CFG80211_REQUIRE_SIGNED_REGDB
+	select RTC_LIB
+	help
+	  Kara Kutu (G55, Wi-Fi M3b): after the M3a loader (P-D A0-A9 + A10
+	  hcc_enable) reports WLAN_READY, the Huawei host layers (oal/hcc/frw/
+	  oam + wal/hmac, built in, no module) take over the bound fn1 with a
+	  polled receive, register a wiphy (station only) and wlan0. Single
+	  power-up (no GPIO, no mmc_hw_reset, no file firmware), compile-time
+	  HCC transmit whitelist (anything else stops), passive scan only
+	  (no probe request, connect, mgmt tx, AP, P2P). Requires
+	  KK_HI1102_PORT and KK_HI1102_M3A (#error otherwise).
+
+config KK_HI1102_M3C
+	bool "Kara Kutu: Hi1102 M3c (connect to one AP: open/WPA2-PSK, passive scan only)"
+	depends on KK_HI1102_M3B
+	help
+	  Kara Kutu (G57 M3c, Beyin framework G57): registers cfg80211
+	  connect/disconnect/add_key/del_key/set_default_key on top of M3b,
+	  opens the data path behind an L3 whitelist (EAPOL, ARP, DHCP client,
+	  ICMP echo on-link), widens the HCC transmit whitelist to the M3c list
+	  (anything else -> RED + DUR), pads CONNECT_REQ / STA_SET_EDCA_REG to
+	  the 4.9 wire layout, never arms the 120 s STA power-save timer, keeps
+	  netdev MAC and MIB StationID identical and masks MAC bytes in OAM logs.
+
+config KK_HI1102_M3C_MAC
+	string "Kara Kutu: Hi1102 M3c wlan0 MAC (12 hex, NVE #193 MACWLAN replacement)"
+	depends on KK_HI1102_M3C
+	default ""
+	help
+	  Default of hi1102_plat.kk_wlan_mac. Empty: random xx:11:02:.. (4.9
+	  error path). The same value is used for wlan0 and the MIB
+	  StationID (802.11 addr2).
+
+config KK_HI1102_M3C_QEMU
+	bool "Kara Kutu: Hi1102 M3c QEMU-only helpers (record mode, x20 timeouts, fake AP)"
+	depends on KK_HI1102_M3C && KK_HI1102_YUKLE_SAHTE
+	help
+	  Kara Kutu (G56/G57): measurement helpers for the fake Hi1102 only.
+	  Record mode (kk_m3c_kayit=1 lets non-listed frames through and logs
+	  them), auth/assoc timeouts x20 and the fake AP (auth/assoc, DHCP,
+	  ARP, ICMP, WPA2-PSK 4-way handshake). Depends on the fake ROM model,
+	  so it can never be enabled in a device image.
+
+config KK_HI1102_M3C_L3_GENIS
+	bool "Kara Kutu: Hi1102 M3c wider L3 whitelist (IPv4 unicast TCP/UDP/ICMP), off unless kk_m3c_l3_genis=1"
+	depends on KK_HI1102_M3C
+	help
+	  Kara Kutu (G59-C, Brain approval item): compiles an extension of the
+	  M3c data-path L3 whitelist. With boot parameter kk_m3c_l3_genis=1 the
+	  filter additionally passes IPv4 unicast TCP, UDP and any ICMP type
+	  whose source is wlan0's own address and whose destination is not
+	  multicast, broadcast, zero-net or loopback. The default (parameter
+	  absent or 0) is the unchanged M3c behaviour: EAPOL, ARP, DHCP client
+	  and on-link ICMP echo only. The HCC transmit gate shares the same
+	  function, so the last line of defence widens identically.
+
 config KK_HI6523_O1
 	bool "Kara Kutu: hi6523 reader also reads STATUS0 (0x06) and 0x8E"
 	depends on KK_HI6523_OKU

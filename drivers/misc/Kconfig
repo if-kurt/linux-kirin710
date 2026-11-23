@@ -610,6 +610,15 @@ config MARVELL_CN10K_DPI
 	  To compile this driver as a module, choose M here: the module
 	  will be called mrvl_cn10k_dpi.
 
+config KK_RESET_NEDENI
+	bool "Kara Kutu: read-only previous reset reason log (PMIC 0x1E1, SCTRL SCSYSSTAT)"
+	depends on OF && SPMI && MFD_SYSCON
+	help
+	  Kara Kutu (G47, KV7): reads once at boot, never writes, the PMIC
+	  HRST_REG13 reboot reason (0x1E1, through the kk-spmi-syscon regmap)
+	  and SCTRL SCSYSSTAT (0x004, through the SCTRL syscon regmap), and logs
+	  them. Writing SCSYSSTAT resets the SoC; this driver has no write path.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"

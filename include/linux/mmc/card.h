@@ -51,6 +51,7 @@ struct mmc_ext_csd {
 	u8			rel_param;
 	bool			enhanced_rpmb_supported;
 	u8			part_config;
+	u8			kk_raw_part_config;	/* Kara Kutu: EXT_CSD[179] kartta okunduğu hâli */
 	u8			cache_ctrl;
 	u8			rst_n_function;
 	unsigned int		part_time;		/* Units: ms */

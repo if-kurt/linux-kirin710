@@ -592,6 +592,35 @@ EXPORT_SYMBOL_GPL(mmc_prepare_busy_cmd);
  *
  *	Modifies the EXT_CSD register for selected card.
  */
+/*
+ * Kara Kutu (G28): eMMC SWITCH (CMD6) en küçük beyaz liste. Yalnız uçucu, kart init'inin
+ * kullandığı baytlar: HS_TIMING {legacy, HS}, BUS_WIDTH {1,4,8 bit SDR} ve PART_CONFIG'te
+ * yalnız kullanıcı alanına dönüş (erişim bitleri 0, boot bitleri kartın ham değeriyle aynı).
+ * Diğer her şey -EBADMSG: mmc_init_card bunu "özellik kapalı" sayıp sürer (cache, HPI,
+ * ERASE_GROUP_DEF, POWER_OFF_NOTIFICATION, POWER_CLASS, FLUSH_CACHE, BKOPS, sanitize ...).
+ */
+static bool kk_switch_izinli(struct mmc_card *card, u8 set, u8 index, u8 value)
+{
+	if (set != EXT_CSD_CMD_SET_NORMAL)
+		return false;
+	switch (index) {
+	case EXT_CSD_HS_TIMING:
+		/* G34: + HS200 = 0x02 tam bayt (sürücü gücü alanı 0: host select_drive_strength tanımsız,
+		 * mmc_select_drive_strength() 0 döner). HS400 (0x03) ve sürücü gücü bitli değerler yok. */
+		return value == EXT_CSD_TIMING_BC || value == EXT_CSD_TIMING_HS ||
+		       value == EXT_CSD_TIMING_HS200;
+	case EXT_CSD_BUS_WIDTH:
+		return value == EXT_CSD_BUS_WIDTH_1 || value == EXT_CSD_BUS_WIDTH_4 ||
+		       value == EXT_CSD_BUS_WIDTH_8;
+	case EXT_CSD_PART_CONFIG:
+		return (value & EXT_CSD_PART_CONFIG_ACC_MASK) == 0 &&
+		       (value & ~EXT_CSD_PART_CONFIG_ACC_MASK) ==
+		       (card->ext_csd.kk_raw_part_config & ~EXT_CSD_PART_CONFIG_ACC_MASK);
+	default:
+		return false;
+	}
+}
+
 int __mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
 		unsigned int timeout_ms, unsigned char timing,
 		bool send_status, bool retry_crc_err, unsigned int retries)
@@ -615,9 +644,19 @@ int __mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
 		  (index << 16) |
 		  (value << 8) |
 		  set;
+	if (!kk_switch_izinli(card, set, index, value)) {
+		host->kk_blocked++;
+		pr_warn("%s: kk: mmc write blocked: CMD6 SWITCH ext_csd[%u]=0x%02x (beyaz listede degil)\n",
+			mmc_hostname(host), index, value);
+		err = -EBADMSG;
+		goto out;
+	}
 	use_r1b_resp = mmc_prepare_busy_cmd(host, &cmd, timeout_ms);
 
+	host->kk_switch_arg = cmd.arg;	/* core.c filtresi yalnız bu argümanı geçirir */
+	host->kk_switch_ok = true;
 	err = mmc_wait_for_cmd(host, &cmd, retries);
+	host->kk_switch_ok = false;
 	if (err)
 		goto out;
 

@@ -422,6 +422,24 @@ struct mmc_host {
 	spinlock_t		lock;		/* lock for claim and bus ops */
 
 	struct mmc_ios		ios;		/* current io bus settings */
+	/* Kara Kutu (G28): eMMC yazma engeli durumu (core.c kk_mmc_filtre, mmc_ops.c __mmc_switch) */
+	u32			kk_switch_arg;	/* __mmc_switch'in onayladığı tek CMD6 argümanı */
+	bool			kk_switch_ok;
+	bool			kk_app_cmd;	/* önceki komut CMD55 (APP_CMD) idi */
+	unsigned int		kk_blocked;	/* reddedilen istek sayısı */
+	bool			kk_strict;	/* G29: katı mod (no-sd ya da kart eMMC); hiç kapanmaz */
+	bool			kk_sdio;	/* G44: SDIO-yalnız host (core.c kk_mmc_kip); katı mod her zaman önce gelir */
+#ifdef CONFIG_KK_EMMC_YAZMA
+	/* G46 (G45 tasarımı): eMMC yazma penceresi, sektör [kk_yaz_bas, kk_yaz_son). Yalnız katı + DT "no-sd"
+	 * host'ta (QEMU sınama derlemesinde SD host'ta da), mmc_start_host'ta DT "karakutu,yazma-araligi"ndan
+	 * bir kez okunur (core.c), sonra değişmez. kk_yaz_son == 0: pencere tanımsız = bugünkü davranış.
+	 * kk_yaz_acik yalnız block.c kk_blk_yazma_ac() ile true olur; kk_yaz_kilit bir kez true olunca
+	 * bu açılışta pencere bir daha açılmaz. G44 SDIO-yalnız host'ta tanımsız kalır. */
+	u64			kk_yaz_bas;
+	u64			kk_yaz_son;
+	bool			kk_yaz_acik;
+	bool			kk_yaz_kilit;
+#endif
 
 	bool			claimed;	/* host exclusively claimed */
 

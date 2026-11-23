@@ -428,6 +428,7 @@ static int mmc_decode_ext_csd(struct mmc_card *card, u8 *ext_csd)
 	if (card->ext_csd.rev >= 3) {
 		u8 sa_shift = ext_csd[EXT_CSD_S_A_TIMEOUT];
 		card->ext_csd.part_config = ext_csd[EXT_CSD_PART_CONFIG];
+		card->ext_csd.kk_raw_part_config = ext_csd[EXT_CSD_PART_CONFIG];
 
 		/* EXT_CSD value is in units of 10ms, but we store in ms */
 		card->ext_csd.part_time = 10 * ext_csd[EXT_CSD_PART_SWITCH_TIME];
@@ -2326,6 +2327,9 @@ int mmc_attach_mmc(struct mmc_host *host)
 	err = mmc_send_op_cond(host, 0, &ocr);
 	if (err)
 		return err;
+
+	/* Kara Kutu (G29): CMD1'e yanıt verdi = kart eMMC -> bu host kalıcı olarak katı modda */
+	kk_mmc_kati_ac(host, "kart eMMC (CMD1 yaniti)");
 
 	mmc_attach_bus(host, &mmc_ops);
 	if (host->ocr_avail_mmc)

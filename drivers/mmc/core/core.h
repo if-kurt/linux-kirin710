@@ -199,4 +199,19 @@ static inline int mmc_flush_cache(struct mmc_host *host)
 	return 0;
 }
 
+/* Kara Kutu (G29): eMMC katı mod (core.c) */
+void kk_mmc_kati_ac(struct mmc_host *host, const char *neden);
+bool kk_mmc_kati(struct mmc_host *host);
+#ifdef CONFIG_KK_EMMC_YAZMA
+/* G46: pencere tanımlı katı host. Yalnız bu durumda yazma kısıtları (REL_WR/FUA, veri etiketi, discard
+ * bildirimi yok) ve blok katmanı kapısı devrededir; pencere tanımsızsa her şey bugünkü gibi. */
+static inline bool kk_mmc_yaz_kisit(struct mmc_host *host)
+{
+	return host->kk_yaz_son && kk_mmc_kati(host);
+}
+#endif
+#ifdef CONFIG_KK_EMMC_YAZMA_SINAMA
+int kk_mmc_sinama_atla(void);	/* G46: yalnız QEMU sınama; 1 blok katmanı, 2 core sınırı atlanır */
+#endif
+
 #endif

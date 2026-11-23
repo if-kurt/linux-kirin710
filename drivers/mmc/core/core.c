@@ -25,6 +25,7 @@
 #include <linux/random.h>
 #include <linux/slab.h>
 #include <linux/of.h>
+#include <linux/property.h>	/* Kara Kutu G44: karakutu,sdio-yalniz */
 
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
@@ -213,9 +214,412 @@ void mmc_request_done(struct mmc_host *host, struct mmc_request *mrq)
 
 EXPORT_SYMBOL(mmc_request_done);
 
+/*
+ * Kara Kutu (G28): karta yazma kodla imkânsız. host->ops->request'e giden tek yol burası
+ * (ve CQE). Veri yazan, silen, yazma korumasını/kilidi değiştiren, CSD/CID programlayan ya da
+ * tanınmayan her komut karta gitmeden -EPERM ile biter ve kmsg'ye "kk: mmc write blocked" basılır.
+ * eMMC CMD6 (veri yok) yalnız __mmc_switch'in beyaz listesinden onaylı argümanla geçer.
+ */
+static const char *kk_mmc_neden_sd(struct mmc_host *host, struct mmc_request *mrq)
+{
+	struct mmc_command *cmd = mrq->cmd;
+	struct mmc_data *data = mrq->data;
+	u32 op = cmd->opcode, arg = cmd->arg;
+	bool app = host->kk_app_cmd;
+	/* G29: "no-sd"/"no-sdio" host (Kirin eMMC) katı modda: SD/SDIO'ya özgü hiçbir izin yok.
+	 * eMMC'de CMD55 sonrası komut üreticiye özgü "uygulama komutu"dur; veri taşıyan CMD6
+	 * kartta SWITCH olarak çalışır (G29 A.1 açıkları). */
+	bool sd = !(host->caps2 & MMC_CAP2_NO_SD);
+	bool sdio = !(host->caps2 & MMC_CAP2_NO_SDIO);
+
+	host->kk_app_cmd = false;
+	if (data && (data->flags & MMC_DATA_WRITE))
+		return "veri yazma";
+	if (mrq->sbc && (mrq->sbc->arg & (BIT(31) | BIT(30))))
+		return "CMD23 reliable-write/packed";
+	if (app) {	/* SD ACMD (yalnız SD host'ta; önceki CMD55 zaten SD şartıyla geçti) */
+		if (!sd)
+			return "ACMD (SD host degil)";
+		switch (op) {
+		case 6: case 13: case 22: case 23: case 41: case 42: case 51:
+			return NULL;
+		default:
+			return "ACMD";
+		}
+	}
+	switch (op) {
+	case 0:		/* yalnız GO_IDLE (arg 0); 0xF0F0F0F0 pre-idle, 0xFFFFFFFA boot: yasak */
+		return arg == 0 ? NULL : "CMD0 ozel arg";
+	case 6:
+		if (data) {	/* SD SWITCH_FUNC: SD host, 64 B okuma, arg[30:24] = 0 (SD biçimi) */
+			if (!sd)
+				return "CMD6 veri (SD host degil)";
+			if (!(data->flags & MMC_DATA_READ) || (arg & 0x7F000000))
+				return "CMD6 veri/bicim";
+			return NULL;
+		}
+		return (host->kk_switch_ok && host->kk_switch_arg == arg) ? NULL : "CMD6 onaysiz";
+	case 23:
+		return (arg & (BIT(31) | BIT(30))) ? "CMD23 reliable-write/packed" : NULL;
+	case 14: case 19:	/* bus test okuma / tuning: yalnız veri okuyorsa */
+		return (data && (data->flags & MMC_DATA_READ)) ? NULL : "CMD14/19 yazma";
+	case 52:	/* SDIO CMD52: yalnız SDIO host'ta ve okuma (bit31 = 0) */
+		return (sdio && !(arg & BIT(31))) ? NULL : "CMD52";
+	case 55:	/* APP_CMD: yalnız SD host'ta */
+		return sd ? NULL : "CMD55 (SD host degil)";
+	case 11:	/* SD voltaj geçişi: yalnız SD host'ta */
+		return sd ? NULL : "CMD11 (SD host degil)";
+	case 1: case 2: case 3: case 5: case 7: case 8: case 9: case 10:
+	case 12: case 13: case 16: case 17: case 18: case 21:
+		return NULL;
+	default:	/* 15 GO_INACTIVE, 24/25 yazma, 26 CID, 27 CSD, 28/29 WP, 35/36/38 erase, 42, 56 ... */
+		return "yazma/bilinmeyen komut";
+	}
+}
+
+/*
+ * Kara Kutu (G29 sertleştirme): katı mod. Host DT'de "no-sd" ise (mmc_start_host) ya da kart
+ * CMD1'e yanıt verip eMMC olarak tanındığı anda (mmc_attach_mmc) açılır ve hiç kapanmaz.
+ * mmc_core.kk_kati=1 parametresi tüm host'ları katı yapar (yalnız kısıtlar; QEMU sınaması için).
+ * Katı modda MMC_IOC_CMD / MMC_IOC_MULTI_CMD de kapalı (block.c).
+ */
+static bool kk_kati_hepsi;
+module_param_named(kk_kati, kk_kati_hepsi, bool, 0644);
+MODULE_PARM_DESC(kk_kati, "Kara Kutu: tum mmc host'lari kati modda (yalniz kisitlar)");
+
+void kk_mmc_kati_ac(struct mmc_host *host, const char *neden)
+{
+	if (host->kk_strict)
+		return;
+	host->kk_strict = true;
+	pr_warn("%s: kk: kati mod acik (%s)\n", mmc_hostname(host), neden);
+}
+
+bool kk_mmc_kati(struct mmc_host *host)
+{
+	return host->kk_strict || READ_ONCE(kk_kati_hepsi);
+}
+
+#ifdef CONFIG_KK_EMMC_YAZMA
+/*
+ * Kara Kutu (G46, G45 tasarımı): katı modda eMMC yazma penceresi (CONFIG_KK_EMMC_YAZMA).
+ * Pencere TANIMSIZSA (DT'de "karakutu,yazma-araligi" yok: kk_yaz_son == 0) CMD24/25 bugünkü gibi
+ * "kati: izinli degil" ile reddedilir (gerekçe metni dahil birebir). Tanımlıysa CMD24/CMD25 yalnız
+ * şunların HEPSİ varken geçer:
+ *  - pencere açık (block.c kk_blk_yazma_ac: GPT/DT/EXT_CSD doğrulaması + açık istek) ve kilitli değil;
+ *  - kart eMMC, sektör adresli, erişim kullanıcı alanı (PART_CONFIG[2:0] = 0: boot/RPMB/GP hiçbir koşulda);
+ *  - CQE kapalı; veri yalnız yazma, 512 B blok, REL_WR/DAT_TAG/FORCED_PRG bayrağı yok;
+ *  - CMD24: tek blok, sbc ve stop yok. CMD25: sbc varsa CMD23 arg = blok sayısı (bayrak biti yok:
+ *    güvenilir yazma b31, paket b30, veri etiketi b29, bağlam b28:25 kapalı); sbc yoksa stop (CMD12) şart;
+ *  - [arg, arg + blok) ⊆ [kk_yaz_bas, kk_yaz_son) (DT aralığı, mmc_start_host'ta okunur; block.c'den bağımsız).
+ */
+#ifdef CONFIG_KK_EMMC_YAZMA_SINAMA
+/*
+ * YALNIZ QEMU sınama derlemesi: katmanların birbirinden bağımsızlığını göstermek için TEK katmanı atlar.
+ * 0 = ikisi de çalışır; 1 = blok katmanı kapısı atlanır (yalnız core korur); 2 = core'un pencere sınırı
+ * denetimi atlanır (yalnız blok katmanı korur). Tek değişken: iki katman aynı anda atlanamaz.
+ * Cihaz .config'inde CONFIG_KK_EMMC_YAZMA_SINAMA yoktur (build.sh denetler).
+ */
+static int kk_sinama_atla;
+module_param_named(kk_sinama_atla, kk_sinama_atla, int, 0644);
+MODULE_PARM_DESC(kk_sinama_atla, "Kara Kutu QEMU: 1 blok katmani, 2 core pencere siniri atlanir (yalniz sinama)");
+
+int kk_mmc_sinama_atla(void)
+{
+	int v = READ_ONCE(kk_sinama_atla);
+
+	return (v == 1 || v == 2) ? v : 0;
+}
+#endif
+
+static bool kk_mmc_yaz_kart(struct mmc_card *card)
+{
+#ifdef CONFIG_KK_EMMC_YAZMA_SINAMA
+	if (card->type == MMC_TYPE_SD)	/* yalnız QEMU sınama derlemesi (sd-card); cihaz .config'inde yok */
+		return mmc_card_blockaddr(card);
+#endif
+	return mmc_card_mmc(card) && mmc_card_blockaddr(card) &&
+	       !(card->ext_csd.part_config & EXT_CSD_PART_CONFIG_ACC_MASK);
+}
+
+static const char *kk_mmc_yaz_neden(struct mmc_host *host, struct mmc_request *mrq)
+{
+	struct mmc_card *card = host->card;
+	struct mmc_data *data = mrq->data;
+	u64 bas = mrq->cmd->arg, n;
+
+	if (!host->kk_yaz_son)		/* pencere tanımsız: bugünkü karar ve gerekçe metni */
+		return "kati: izinli degil";
+	if (!READ_ONCE(host->kk_yaz_acik) || READ_ONCE(host->kk_yaz_kilit))
+		return "kati: yazma penceresi kapali";
+	if (!card || host->cqe_enabled || !kk_mmc_yaz_kart(card))
+		return "kati: yazma kart/erisim";
+	if (!data || data->blksz != 512 || !data->blocks ||
+	    (data->flags & (MMC_DATA_REL_WR | MMC_DATA_DAT_TAG | MMC_DATA_FORCED_PRG)))
+		return "kati: yazma verisi";
+	n = data->blocks;
+	if (mrq->cmd->opcode == MMC_WRITE_BLOCK) {
+		if (n != 1 || mrq->sbc || mrq->stop)
+			return "kati: CMD24 bicim";
+	} else if (mrq->sbc) {
+		if (mrq->sbc->arg != n)
+			return "kati: CMD23 yazma sayisi/bayrak";
+	} else if (!mrq->stop) {
+		return "kati: CMD25 stop yok";
+	}
+#ifdef CONFIG_KK_EMMC_YAZMA_SINAMA
+	if (kk_mmc_sinama_atla() == 2)
+		return NULL;
+#endif
+	if (bas < host->kk_yaz_bas || bas >= host->kk_yaz_son || n > host->kk_yaz_son - bas)
+		return "kati: yazma pencere disi";
+	return NULL;
+}
+#endif /* CONFIG_KK_EMMC_YAZMA */
+
+/*
+ * Katı mod kararı: yalnız opcode ve argüman kuralı. Her izinli opcode'un veri yönü sabittir
+ * (yok ya da okuma); istekteki veri bayrağı bununla uyuşmazsa red. Yani veri bayrağı izni
+ * yalnız daraltır. CMD23 yalnız bir okuma isteğinin sbc'si, CMD12 yalnız verisiz ya da stop.
+ */
+static const char *kk_mmc_neden_kati(struct mmc_host *host, struct mmc_request *mrq)
+{
+	struct mmc_command *cmd = mrq->cmd;
+	struct mmc_data *data = mrq->data;
+	u32 op = cmd->opcode, arg = cmd->arg;
+#ifdef CONFIG_KK_EMMC_YAZMA
+	int veri;	/* 0: verisiz olmalı, 1: okuma verisi olmalı, 2: yazma verisi olmalı (G46) */
+	const char *yaz;
+#else
+	int veri;	/* 0: verisiz olmalı, 1: okuma verisi olmalı */
+#endif
+	bool argok;
+	bool app = host->kk_app_cmd;
+
+	host->kk_app_cmd = false;
+	if (app)	/* CMD55 sonrası (eMMC'de üreticiye özgü uygulama komutu): her zaman red */
+		return "kati: CMD55 sonrasi";
+	switch (op) {
+	case 0:  veri = 0; argok = arg == 0; break;			/* GO_IDLE */
+	case 1:  veri = 0; argok = true; break;				/* SEND_OP_COND (OCR) */
+	case 2:  veri = 0; argok = true; break;				/* ALL_SEND_CID */
+	case 3:  veri = 0; argok = (arg & 0xFFFF) == 0; break;		/* SET_RELATIVE_ADDR */
+	case 5:  veri = 0; argok = (arg & 0x7FFF) == 0; break;		/* SLEEP_AWAKE (bit15 uyku) */
+	case 6:  veri = 0; argok = host->kk_switch_ok && host->kk_switch_arg == arg; break;
+	case 7:  veri = 0; argok = (arg & 0xFFFF) == 0; break;		/* SELECT/DESELECT */
+	case 8:  veri = 1; argok = arg == 0; break;			/* SEND_EXT_CSD */
+	case 9:  veri = 0; argok = (arg & 0xFFFF) == 0; break;		/* SEND_CSD */
+	case 10: veri = 0; argok = (arg & 0xFFFF) == 0; break;		/* SEND_CID */
+	case 12: veri = 0; argok = (arg & 0xFFFF) == 0; break;		/* STOP_TRANSMISSION */
+	case 13: veri = 0; argok = (arg & 0xFFFF) == 0; break;		/* SEND_STATUS */
+	case 16: veri = 0; argok = arg == 512; break;			/* SET_BLOCKLEN */
+	case 17: veri = 1; argok = true; break;				/* READ_SINGLE_BLOCK */
+	case 18: veri = 1; argok = true; break;				/* READ_MULTIPLE_BLOCK */
+	case 21: veri = 1; argok = arg == 0; break;			/* G34: SEND_TUNING_BLOCK_HS200 (yalnız okuma) */
+#ifdef CONFIG_KK_EMMC_YAZMA
+	case 24: case 25:	/* G46: WRITE_BLOCK / WRITE_MULTIPLE_BLOCK, yalnız açık pencere içinde */
+		yaz = kk_mmc_yaz_neden(host, mrq);
+		if (yaz)
+			return yaz;
+		veri = 2; argok = true; break;
+#endif
+	default:
+		return "kati: izinli degil";
+	}
+	if (!argok)
+		return "kati: argüman";
+	if (veri == 0 && data)
+		return "kati: beklenmeyen veri";
+	if (veri == 1 && (!data || (data->flags & MMC_DATA_WRITE) || !(data->flags & MMC_DATA_READ)))
+		return "kati: okuma verisi bekleniyordu";
+#ifdef CONFIG_KK_EMMC_YAZMA
+	if (veri == 2 && (!data || !(data->flags & MMC_DATA_WRITE) || (data->flags & MMC_DATA_READ)))
+		return "kati: yazma verisi bekleniyordu";
+	if (mrq->sbc) {		/* yalnız 17/18 okumasının ya da (G46) 25 yazmasının parçası, yalnız blok sayısı */
+		if ((op != 17 && op != 18 && op != 25) || mrq->sbc->opcode != MMC_SET_BLOCK_COUNT ||
+		    (mrq->sbc->arg & 0xFFFF0000))
+			return "kati: CMD23";
+	}
+#else
+	if (mrq->sbc) {		/* yalnız 17/18 okumasının parçası, yalnız blok sayısı */
+		if ((op != 17 && op != 18) || mrq->sbc->opcode != MMC_SET_BLOCK_COUNT ||
+		    (mrq->sbc->arg & 0xFFFF0000))
+			return "kati: CMD23";
+	}
+#endif
+	if (mrq->stop && mrq->stop->opcode != MMC_STOP_TRANSMISSION)
+		return "kati: stop";
+	return NULL;
+}
+
+/*
+ * Kara Kutu (G44): SDIO-yalnız host (Hi1102, dwmmc2). Bir host yalnız şu koşulların HEPSİ birden varsa
+ * SDIO-yalnız olur: DT "karakutu,sdio-yalniz", "no-sd", "no-mmc", "non-removable" ve "no-sdio" YOK.
+ * eMMC host'u (no-sd + no-sdio) bu koşulu hiçbir zaman sağlamaz; onun için karar G29 ile aynıdır (katı).
+ */
+static bool kk_mmc_sdio_uygun(struct mmc_host *host, bool dt_sdio)
+{
+	u32 c2 = host->caps2;
+
+	return dt_sdio && (c2 & MMC_CAP2_NO_SD) && (c2 & MMC_CAP2_NO_MMC) && !(c2 & MMC_CAP2_NO_SDIO) &&
+	       (host->caps & MMC_CAP_NONREMOVABLE);
+}
+
+/* mmc_start_host kararı: 0 = yok (G28 SD dalı), 1 = katı (G29 "DT no-sd"), 2 = SDIO-yalnız (G44) */
+static int kk_mmc_kip(struct mmc_host *host, bool dt_sdio)
+{
+	if (kk_mmc_sdio_uygun(host, dt_sdio))
+		return 2;
+	return (host->caps2 & MMC_CAP2_NO_SD) ? 1 : 0;
+}
+
+/*
+ * SDIO-yalnız host'ta izinli olanların TAM listesi (listede olmayan her şey red):
+ *   CMD0 arg 0; CMD3 arg 0; CMD5 arg[31:25] = 0 (OCR + S18R); CMD7 arg[15:0] = 0  — hepsi verisiz;
+ *   CMD52 verisiz, stuff bitleri (b26, b8) 0; kart henüz yoksa (init) yalnız fonksiyon 0 (CCCR/CIS);
+ *   CMD53 yalnız kart SDIO iken; veri şart; veri yönü arg b31 ile aynı (b31=1 yalnız yazma, 0 yalnız okuma).
+ * sbc (CMD23) ve stop hiçbir zaman yok. CMD55/ACMD yok. Kart varsa ve SDIO değilse her şey red.
+ * Bu listede eMMC'ye yazan/silen hiçbir opcode yok (6, 16-18, 23-30, 35-38, 42, 49, 54, 56 ...).
+ *
+ * G48 (O9; yalnız DARALTIR, okumalar değişmez): YAZMALAR (CMD52/CMD53 b31 = 1) yalnız şu listede:
+ *   CMD52 (RAW b27 = 0):  fn0 CCCR 0x02 IOEx  değer ⊆ 0x02          (sdio_enable_func, H1)
+ *                          fn0 CCCR 0x06 ABORT değer ⊆ 0x0F          (mmc çekirdeği sdio_reset RES, K1)
+ *                          fn0 CCCR 0x07 BIC   değer[1:0] = 10b       (mmc çekirdeği 4 bit veri yolu, K2)
+ *                          fn0 FBR1 0x110 = 0x00, 0x111 = 0x02        (blok 512, H2)
+ *                          fn0 0xF0 = 0x00                            (Hi1102 uyandırma, H5)
+ *                          fn1 0x08 değer ⊆ 0x07, fn1 0x09 değer ⊆ 0x07 (kesme temizle/aç, H3/H4)
+ *   CMD53: yalnız fn1, adres 0x00 (FIFO), sabit adres (OP b26 = 0)   (H6)
+ * Listede olmayan her SDIO yazması (fn >= 2, CCCR 0x04 IENx, 0x13 SPEED, 0x15/0x16, FBR/CIS'in geri kalanı, fn1'in
+ * diğer adresleri, artan adresli CMD53 yazması) RED. Tasarım: work/g47/wifi-m2/TASARIM-M2.md §4-5.2.
+ */
+static const char *kk_mmc_sdio_yazma(u32 op, u32 arg)
+{
+	u32 fn = (arg >> 28) & 7, adr = (arg >> 9) & 0x1FFFF, v = arg & 0xFF;
+
+	if (op == 53)
+		return (fn == 1 && adr == 0x00 && !(arg & BIT(26))) ? NULL : "sdio: CMD53 yazma listede degil";
+	if (arg & BIT(27))
+		return "sdio: CMD52 RAW yazma";
+	if (fn == 0) {
+		switch (adr) {
+		case 0x02:  return (v & ~0x02u) ? "sdio: CMD52 IOEx deger" : NULL;
+		case 0x06:  return (v & ~0x0Fu) ? "sdio: CMD52 ABORT deger" : NULL;
+		case 0x07:  return (v & 0x03u) != 0x02 ? "sdio: CMD52 BIC deger" : NULL;
+		case 0x110: return v != 0x00 ? "sdio: CMD52 FBR1 blok deger" : NULL;
+		case 0x111: return v != 0x02 ? "sdio: CMD52 FBR1 blok deger" : NULL;
+		case 0xF0:  return v != 0x00 ? "sdio: CMD52 0xF0 deger" : NULL;
+		}
+	} else if (fn == 1 && (adr == 0x08 || adr == 0x09)) {
+		return (v & ~0x07u) ? "sdio: CMD52 F1 kesme deger" : NULL;
+	}
+	return "sdio: CMD52 yazma listede degil";
+}
+
+static const char *kk_mmc_neden_sdio(struct mmc_host *host, struct mmc_request *mrq)
+{
+	struct mmc_command *cmd = mrq->cmd;
+	struct mmc_data *data = mrq->data;
+	u32 op = cmd->opcode, arg = cmd->arg;
+	bool app = host->kk_app_cmd;
+	bool kart = host->card != NULL;
+
+	host->kk_app_cmd = false;
+	if (app)
+		return "sdio: CMD55 sonrasi";
+	if (kart && host->card->type != MMC_TYPE_SDIO)
+		return "sdio: kart SDIO degil";
+	if (mrq->sbc || mrq->stop)
+		return "sdio: sbc/stop";
+	switch (op) {
+	case 0:		/* GO_IDLE */
+		if (arg)
+			return "sdio: CMD0 arg";
+		break;
+	case 3:		/* SEND_RELATIVE_ADDR (SDIO: arg 0) */
+		if (arg)
+			return "sdio: CMD3 arg";
+		break;
+	case 5:		/* IO_SEND_OP_COND: OCR[23:0] + S18R (b24) */
+		if (arg & 0xFE000000)
+			return "sdio: CMD5 arg";
+		break;
+	case 7:		/* SELECT/DESELECT_CARD: RCA << 16 */
+		if (arg & 0xFFFF)
+			return "sdio: CMD7 arg";
+		break;
+	case 52:	/* IO_RW_DIRECT: b31 R/W, [30:28] fn, b27 RAW, [25:9] adres, [7:0] veri */
+		if (arg & (BIT(26) | BIT(8)))
+			return "sdio: CMD52 stuff bit";
+		if (!kart && (arg & (7u << 28)))
+			return "sdio: CMD52 kart yokken fn != 0";
+		if (arg & BIT(31))		/* G48 O9: yazma listesi */
+			return kk_mmc_sdio_yazma(52, arg) ?: (data ? "sdio: beklenmeyen veri" : NULL);
+		break;
+	case 53:	/* IO_RW_EXTENDED */
+		if (!kart)
+			return "sdio: CMD53 kart yok";
+		if (!data)
+			return "sdio: CMD53 verisiz";
+		if (arg & BIT(31)) {
+			if (!(data->flags & MMC_DATA_WRITE) || (data->flags & MMC_DATA_READ))
+				return "sdio: CMD53 yon (yazma)";
+			return kk_mmc_sdio_yazma(53, arg);	/* G48 O9 */
+		} else {
+			if (!(data->flags & MMC_DATA_READ) || (data->flags & MMC_DATA_WRITE))
+				return "sdio: CMD53 yon (okuma)";
+		}
+		return NULL;
+	default:
+		return "sdio: izinli degil";
+	}
+	if (data)
+		return "sdio: beklenmeyen veri";
+	return NULL;
+}
+
+static const char *kk_mmc_neden(struct mmc_host *host, struct mmc_request *mrq)
+{
+	if (kk_mmc_kati(host))			/* katı mod her zaman önce (eMMC host'u burada kalır) */
+		return kk_mmc_neden_kati(host, mrq);
+	if (host->kk_sdio) {			/* G44 */
+		if (!kk_mmc_sdio_uygun(host, true))	/* bayrak var, host koşulu yok: tutarsız -> hepsi red */
+			return "sdio: host kosulu tutarsiz";
+		return kk_mmc_neden_sdio(host, mrq);
+	}
+	return kk_mmc_neden_sd(host, mrq);
+}
+
+static bool kk_mmc_filtre(struct mmc_host *host, struct mmc_request *mrq)
+{
+	const char *neden = kk_mmc_neden(host, mrq);
+
+	if (!neden) {
+		if (mrq->cmd->opcode == MMC_APP_CMD)
+			host->kk_app_cmd = true;
+		return true;
+	}
+	host->kk_blocked++;
+	pr_warn("%s: kk: mmc write blocked: CMD%u arg=0x%08x (%s) toplam=%u\n",
+		mmc_hostname(host), mrq->cmd->opcode, mrq->cmd->arg, neden, host->kk_blocked);
+	mrq->cmd->error = -EPERM;
+	mrq->cmd->retries = 0;		/* yeniden deneme yok */
+	if (mrq->sbc)
+		mrq->sbc->error = -EPERM;
+	if (mrq->data) {
+		mrq->data->error = -EPERM;
+		mrq->data->bytes_xfered = 0;
+	}
+	return false;
+}
+
 static void __mmc_start_request(struct mmc_host *host, struct mmc_request *mrq)
 {
 	int err;
+
+	if (!kk_mmc_filtre(host, mrq)) {
+		mmc_request_done(host, mrq);
+		return;
+	}
 
 	/* Assumes host controller has been runtime resumed by mmc_claim_host */
 	err = mmc_retune(host);
@@ -450,6 +854,10 @@ int mmc_cqe_start_req(struct mmc_host *host, struct mmc_request *mrq)
 	if (err)
 		goto out_err;
 
+	if (!kk_mmc_filtre(host, mrq)) {	/* Kara Kutu: CQE yolu da (G28'de CQE kapalı) */
+		err = -EPERM;
+		goto out_err;
+	}
 	err = host->cqe_ops->cqe_request(host, mrq);
 	if (err)
 		goto out_err;
@@ -2279,8 +2687,51 @@ void mmc_rescan(struct work_struct *work)
 		mmc_schedule_delayed_work(&host->detect, HZ);
 }
 
+#ifdef CONFIG_KK_EMMC_YAZMA
+/*
+ * Kara Kutu (G46): yazma penceresinin üst sınırı. Yalnız DT "no-sd" (katı) host'ta (QEMU sınama
+ * derlemesinde SD host'ta da), DT "karakutu,yazma-araligi" = <baslangic uzunluk> (512 B sektör).
+ * Özellik yoksa sessizce çıkar: kk_yaz_son = 0, bugünkü davranış. Geçersizse (ilk 34 sektör, 0 uzunluk)
+ * pencere yine tanımsız kalır. Pencereyi bu fonksiyon AÇMAZ; açma block.c'de (GPT + EXT_CSD doğrulaması).
+ * G47: G44 SDIO-yalnız host'ta (kk_mmc_kip 2) hiç okunmaz; pencere yalnız katı host'a aittir.
+ */
+static void kk_mmc_yaz_aralik_oku(struct mmc_host *host)
+{
+	u32 v[2] = { 0, 0 };
+
+	if (!host->parent || device_property_read_u32_array(host->parent, "karakutu,yazma-araligi", v, 2))
+		return;
+	if (v[0] < 34 || !v[1]) {
+		pr_warn("%s: kk: yazma-araligi gecersiz (%u, %u); pencere yok\n", mmc_hostname(host), v[0], v[1]);
+		return;
+	}
+	host->kk_yaz_bas = v[0];
+	host->kk_yaz_son = (u64)v[0] + v[1];
+	pr_warn("%s: kk: yazma penceresi siniri [%llu, %llu) (kapali)\n", mmc_hostname(host),
+		host->kk_yaz_bas, host->kk_yaz_son);
+}
+#endif
+
 void mmc_start_host(struct mmc_host *host)
 {
+	switch (kk_mmc_kip(host, device_property_read_bool(host->parent, "karakutu,sdio-yalniz"))) {
+	case 1:					/* Kara Kutu (G29): DT "no-sd" */
+		kk_mmc_kati_ac(host, "DT no-sd");
+#ifdef CONFIG_KK_EMMC_YAZMA
+		kk_mmc_yaz_aralik_oku(host);	/* G46 */
+#endif
+		break;
+	case 2:					/* Kara Kutu (G44): SDIO-yalnız (katı mod açılmaz) */
+		host->kk_sdio = true;
+		pr_warn("%s: kk: sdio-yalniz host (CMD0/3/5/7/52/53; katı mod onceligi korunur)\n",
+			mmc_hostname(host));
+		break;
+#ifdef CONFIG_KK_EMMC_YAZMA_SINAMA
+	default:				/* G46 yalnız QEMU: SD host (pencere yalnız kk_kati=1 ile katıyken işler) */
+		kk_mmc_yaz_aralik_oku(host);
+		break;
+#endif
+	}
 	host->f_init = max(min(freqs[0], host->f_max), host->f_min);
 	host->rescan_disable = 0;
 

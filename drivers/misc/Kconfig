@@ -636,6 +636,15 @@ config KK_HI6523_OKU
 	  registers (as 4.9 does) once at probe, then every 30 s after a 60 s
 	  gap. Contains no register write path.
 
+config KK_HI6523_DENEY
+	bool "Kara Kutu: phase 2 one-shot CHG_EN experiment (sysfs)"
+	depends on KK_HI6523_OKU || KK_SARJ_SAHTE
+	help
+	  Kara Kutu (G40): manually triggered single CHG_EN=1 experiment with
+	  read-back, no watchdog feeding, observed for at least 60 s and ended
+	  by the driver itself within 3 min. Adds the only hi6523 write path
+	  (register 0x90). Not in the phase 1 device image.
+
 config KK_HI6523_O1
 	bool "Kara Kutu: hi6523 reader also reads STATUS0 (0x06) and 0x8E"
 	depends on KK_HI6523_OKU

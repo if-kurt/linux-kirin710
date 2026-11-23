@@ -25,6 +25,7 @@ obj-$(CONFIG_KK_LM36274_KK)	+= kk-lm36274.o
 obj-$(CONFIG_KK_SDIO_KAPI)	+= kk-sdio-kapi.o
 # G48 M2a: Hi1102 ROM yükleyicisi (gömülü firmware; yollar CONFIG_KK_HI1102_FW_DIR) + yalnız QEMU sahte ROM modeli
 obj-$(CONFIG_KK_HI1102_YUKLE)	+= kk-hi1102-yukle.o
+obj-$(CONFIG_KK_HI1102_PORT)	+= kk-wifi.o
 # G55 M3b: Huawei host katmanlari (port, gomulu)
 obj-$(CONFIG_KK_HI1102_M3B)	+= kk-hi1102-port/
 # G49 M2b: KK_HI1102_YALNIZ_KIP1=y iken firmware nesnesi (kk-hi1102-fw.o, .incbin) DERLENMEZ, FW_DIR kullanılmaz

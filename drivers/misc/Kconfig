@@ -765,6 +765,32 @@ config KK_HI1102_FW_DIR
 	depends on KK_HI1102_YUKLE && !KK_HI1102_YALNIZ_KIP1
 	default ""
 
+config KK_HI1102_PORT
+	bool "Kara Kutu: Hi1102 SDIO function driver skeleton (Wi-Fi M3-0.1; bind only, no I/O)"
+	depends on KK_SDIO_KAPI && MMC && !WILC1000_SDIO && (!CFG80211 || KK_HI1102_M3B)
+	help
+	  Kara Kutu (G52, Wi-Fi M3-0.1): SDIO function driver for the Hi1102
+	  (0x0296/0x5347) that only binds. Off unless the command line has
+	  kk_wifi.ac=1; then /sys/kernel/kk_wifi/{baslat,durum} appear and the
+	  driver is registered only when "1" is written to baslat (once per
+	  boot). probe reads core structures only (no sdio_claim_host, enable,
+	  read or write) and accepts fn1 on a host whose DT node has
+	  karakutu,sdio-yalniz. Firmware download and HCC are M3a.
+	  Together with KK_HI1102_YUKLE only as KK_HI1102_M3A (#error otherwise).
+
+config KK_HI1102_M3A
+	bool "Kara Kutu: Hi1102 M3a (function driver runs the M2c/P-D loader, then HCC receive only)"
+	depends on KK_HI1102_PORT && KK_HI1102_YUKLE && !KK_HI1102_YALNIZ_KIP1 && ((!CFG80211 && !FW_LOADER) || KK_HI1102_M3B)
+	help
+	  Kara Kutu (G54, Wi-Fi M3a): when the kk-hi1102 SDIO function driver
+	  binds (after the one-shot /sys/kernel/kk_wifi/baslat trigger), it
+	  hands fn1 to kk-hi1102-yukle, which runs the device-proven M2c/P-D
+	  sequence (mode 2 download, A9 interrupt service until WLAN_READY) and
+	  then A10: hcc_enable equivalent (host state only) and a bounded HCC
+	  receive phase (ACK reads, FIFO reads, header decode, OAM packets
+	  counted and dropped). The "yukle" sysfs file does not exist. No
+	  cfg80211, no net device, no HCC transmit, no new SDIO write type.
+
 config KK_HI1102_M3B
 	bool "Kara Kutu: Hi1102 M3b (port host layers on top of M3a: cfg80211 STA, passive scan only)"
 	depends on KK_SDIO_KAPI && MMC && CFG80211=y && !WILC1000_SDIO && !CFG80211_WEXT && !CFG80211_REQUIRE_SIGNED_REGDB

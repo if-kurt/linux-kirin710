@@ -22,6 +22,7 @@ obj-$(CONFIG_KK_RESET_NEDENI)	+= kk-reset-nedeni.o
 obj-$(CONFIG_KK_S1_SAHTE)	+= kk-s1-sahte.o
 obj-$(CONFIG_KK_I2C3_KAPI)	+= kk-i2c3-kapi.o
 obj-$(CONFIG_KK_LM36274_KK)	+= kk-lm36274.o
+obj-$(CONFIG_KK_SDIO_KAPI)	+= kk-sdio-kapi.o
 obj-$(CONFIG_DUMMY_IRQ)		+= dummy-irq.o
 obj-$(CONFIG_ICS932S401)	+= ics932s401.o
 obj-$(CONFIG_LKDTM)		+= lkdtm/

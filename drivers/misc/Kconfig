@@ -700,6 +700,36 @@ config KK_WIFI_M0
 	  and reset status show it accessible. Not in device images unless
 	  approved.
 
+config KK_SDIO_KAPI
+	bool "Kara Kutu: Kirin 710 SDIO (dwmmc2 / Hi1102) M1 gate"
+	depends on OF && OF_IRQ && OF_ADDRESS && SPMI && MFD_KK_SPMI_SYSCON && MMC_DW_K3
+	help
+	  Kara Kutu (G45, Wi-Fi M1; G47 S3): off unless the kernel command
+	  line has kk_sdio_kapi.ac=1 (then no MMIO/SPMI access at all). When
+	  on, probe only READS CRG/pinmux/GPIO/PMIC state and checks
+	  preconditions (no write at boot). The write sequence runs only when
+	  root writes 1 to the device's sysfs file "baslat" (accepted once per
+	  boot; a second trigger is refused): conditional, read-back-verified
+	  PMIC 0x3E (see KK_SDIO_KAPI_PMIC_YAZ), CRG (CLKDIV19 b6, PEREN0 b21,
+	  PEREN4 b19, PERRSTDIS4 b20), GPIO3_6 (masked DATA) and iomg-mmc1
+	  pinmux writes, then the DT-disabled dwmmc2 device is created and the
+	  SDIO card enumeration result is logged (no SDIO function driver may
+	  be built in). Stops on any unexpected value without MMIO rollback.
+
+config KK_SDIO_KAPI_PMIC_YAZ
+	bool "Kara Kutu: SDIO gate may write PMIC 0x3E b0 (approval W1 ONLY)"
+	depends on KK_SDIO_KAPI
+	help
+	  Kara Kutu (G45/G46/G47 W1): compiles the single PMIC write site
+	  (0x3E 0x00 -> 0x01, en_32k_bt; only if that write's own read-back
+	  does not match, a single rollback 0x3E <- 0x00 from the same site;
+	  a stop in a later step leaves 0x3E = 0x01) into kk-sdio-kapi; it is
+	  used only with the additional command line flag
+	  kk_sdio_kapi.pmic_yaz=1 (default 0) and only after the sysfs
+	  trigger. Without the flag, or without this option, the gate only
+	  reads 0x3E and stops unless it is already 0x01. W1 approved (G47);
+	  default n, only the Faz B image variant enables it.
+
 config KK_HI6523_O1
 	bool "Kara Kutu: hi6523 reader also reads STATUS0 (0x06) and 0x8E"
 	depends on KK_HI6523_OKU

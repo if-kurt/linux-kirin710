@@ -610,6 +610,16 @@ config MARVELL_CN10K_DPI
 	  To compile this driver as a module, choose M here: the module
 	  will be called mrvl_cn10k_dpi.
 
+config KK_GUC_TESHIS
+	bool "Kara Kutu: read-only power state diagnosis dump"
+	depends on OF
+	help
+	  Kara Kutu (G44): reads (never writes) clock gate, reset and power
+	  domain status registers to show which blocks the bootloader left
+	  on. A block's own registers are read only after its gate, reset
+	  and power status show it accessible. Dumps at probe and once more
+	  after a delay. Not in device images unless approved.
+
 config KK_RESET_NEDENI
 	bool "Kara Kutu: read-only previous reset reason log (PMIC 0x1E1, SCTRL SCSYSSTAT)"
 	depends on OF && SPMI && MFD_SYSCON

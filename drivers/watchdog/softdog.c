@@ -197,8 +197,13 @@ static int __init softdog_init(void)
 		softdog_preticktock.function = softdog_pretimeout;
 	}
 
-	if (soft_active_on_boot)
+	if (soft_active_on_boot) {
 		softdog_ping(&softdog_dev);
+		/* Kara Kutu (G28, yalnız QEMU sınaması): "bootloader'ın açık bıraktığı donanım"
+		 * gibi davran; çekirdek kullanıcı alanı açana kadar besler, watchdog.open_timeout
+		 * dolunca bırakır (cihazdaki SP805 ile aynı watchdog_dev yolu). Cihaz imajında softdog yok. */
+		set_bit(WDOG_HW_RUNNING, &softdog_dev.status);
+	}
 
 	ret = watchdog_register_device(&softdog_dev);
 	if (ret)

@@ -1,0 +1,694 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Kara Kutu (Görev 17) — Huawei P30 Lite (MAR-LX1A, "marie"), HiSilicon Kirin 710 (hi6260)
+ * "İlk nefes" taslağı: tek A53 çekirdek, GIC-400, arch timer, PSCI, PL011 UART6 (debug),
+ * SP805 watchdog (bootloader açık bırakıyor; beslenmezse reset), simple-framebuffer
+ * (bootloader'ın logo tamponu). Saat/reset/pinctrl/PMIC YOK — hepsi sabit saat.
+ * Kaynak: cihazın canlı DT'si (/sys/firmware/fdt, work/g17/dt/canli.dts) ve fork DT'si.
+ * UYARI: Bootloader kendi DT'sini verir (dts+dto); bu DTB ancak shim ile (work/g17/ana-hat/shim) kullanılır.
+ */
+/dts-v1/;
+
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/thermal/thermal.h>
+#include <dt-bindings/spmi/spmi.h>
+
+/ {
+	model = "Huawei P30 Lite (MAR-LX1A) - Kara Kutu (G47 S2: schedutil + cpuidle bekcisi + pmsg + reset nedeni okuma; G45: Faz 3 sarj politikasi + WDT katmani + kapanis kancasi + i2c6 4.9 gibi acilir + hi6523 okuma + cpufreq + thermal 200 ms + sigorta + HS200 + Debian salt okunur)";
+	compatible = "huawei,marie", "hisilicon,kirin710";
+	interrupt-parent = <&gic>;
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	aliases {
+		serial6 = &uart6;
+	};
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		stdout-path = "serial6:115200n8";
+		/* G28: kamerasız test; kanıt pstore. ignore_loglevel: her seviye console-ramoops'a da gider (watchdog
+		 * reset'iyle biten takılmada dmesg dökümü olmaz, tam log console kaydında kalır). panic=0: panikte bekle. */
+		bootargs = "earlycon=pl011,mmio32,0xfff32000 console=ttyAMA6,115200 console=tty0 ignore_loglevel consoleblank=0 fbcon=font:TER16x32 panic=0 printk.devkmsg=on clk_ignore_unused fsck.mode=skip systemd.gpt_auto=0 kk_debian_sinir=720";
+
+		/* Bootloader'ın açık bıraktığı panel tamponu (hisi_fb: g_logo_buffer_base=0x18c00000;
+		 * fb0: 1080x2312, 32 bpp, stride 4320). Kanal sırası doğrulanmadı (a8r8g8b8/a8b8g8r8). */
+		framebuffer0: framebuffer@18c00000 {
+			compatible = "simple-framebuffer";
+			reg = <0x0 0x18c00000 0x0 0x00986700>;	/* 1080*2312*4 */
+			width = <1080>;
+			height = <2312>;
+			stride = <4320>;
+			format = "a8r8g8b8";
+		};
+	};
+
+	psci {
+		/* Stok DT: PSCI 0.2 fonksiyon kimlikleri (cpu_on 0xc4000003, system_off 0x84000008), smc */
+		compatible = "arm,psci-0.2";
+		method = "smc";	/* G45: CPU_SUSPEND hariç (bkz. idle-states karakutu,cpu-suspend-hvc) */
+	};
+
+	cpus {
+		#address-cells = <2>;
+		#size-cells = <0>;
+
+		/* G26: 8 çekirdek PSCI CPU_ON ile (stok DT ile aynı MPIDR'ler). cpu@0-3 Cortex-A53 (MIDR part 0xd03),
+		 * cpu@100-103 Cortex-A73 (0xd09; cihazda /proc/cpuinfo ile ölçüldü). */
+		/*
+		 * G45: 4.9 canlı DT idle-states (canli.dts:335-375) BİREBİR: param, entry/exit/min-residency,
+		 * local-timer-stop. cpu-nap-0 (param 0) 4.9'da hiçbir CPU'ya bağlı değil -> alınmadı.
+		 * Hepsi "karakutu,varsayilan-kapali": açılışta kapalı (CPUIDLE_FLAG_OFF), yalnız çalışırken sysfs
+		 * stateN/disable=0 ile açılır, reboot'ta yine kapalı. Broadcast: yazılım (hrtimer); sp804 YOK.
+		 */
+		idle-states {
+			entry-method = "psci";
+			/* G45: YALNIZ CPU_SUSPEND hvc ile (4.9 canlı DT: psci method "hvc", cpu_suspend 0xc4000001;
+			 * psci.c yaması). Yalnız açılmış bir idle durumunda çağrılır; diğer PSCI çağrıları smc'de kalır. */
+			karakutu,cpu-suspend-hvc;
+
+			CPU_SLEEP_0: cpu-sleep-0 {
+				compatible = "arm,idle-state";
+				arm,psci-suspend-param = <0x00010000>;
+				entry-latency-us = <40>;
+				exit-latency-us = <70>;
+				min-residency-us = <3000>;
+				local-timer-stop;
+				karakutu,varsayilan-kapali;
+			};
+
+			CLUSTER_SLEEP_0: cluster-sleep-0 {
+				compatible = "arm,idle-state";
+				arm,psci-suspend-param = <0x01010000>;
+				entry-latency-us = <500>;
+				exit-latency-us = <5000>;
+				min-residency-us = <20000>;
+				local-timer-stop;
+				karakutu,varsayilan-kapali;
+			};
+
+			CLUSTER_SLEEP_1: cluster-sleep-1 {
+				compatible = "arm,idle-state";
+				arm,psci-suspend-param = <0x01010000>;
+				entry-latency-us = <1000>;
+				exit-latency-us = <5000>;
+				min-residency-us = <20000>;
+				local-timer-stop;
+				karakutu,varsayilan-kapali;
+			};
+		};
+
+		cpu-map {
+			cluster0 {
+				core0 { cpu = <&cpu0>; };
+				core1 { cpu = <&cpu1>; };
+				core2 { cpu = <&cpu2>; };
+				core3 { cpu = <&cpu3>; };
+			};
+			cluster1 {
+				core0 { cpu = <&cpu4>; };
+				core1 { cpu = <&cpu5>; };
+				core2 { cpu = <&cpu6>; };
+				core3 { cpu = <&cpu7>; };
+			};
+		};
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0x0 0x0>;
+			enable-method = "psci";
+			cpu-idle-states = <&CPU_SLEEP_0 &CLUSTER_SLEEP_0>;	/* G45: 4.9 ile aynı */
+			#cooling-cells = <2>;	/* G36: cpufreq soğutma aygıtı */
+		};
+
+		cpu1: cpu@1 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0x0 0x1>;
+			enable-method = "psci";
+			cpu-idle-states = <&CPU_SLEEP_0 &CLUSTER_SLEEP_0>;	/* G45: 4.9 ile aynı */
+			#cooling-cells = <2>;	/* G36: cpufreq soğutma aygıtı */
+		};
+
+		cpu2: cpu@2 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0x0 0x2>;
+			enable-method = "psci";
+			cpu-idle-states = <&CPU_SLEEP_0 &CLUSTER_SLEEP_0>;	/* G45: 4.9 ile aynı */
+			#cooling-cells = <2>;	/* G36: cpufreq soğutma aygıtı */
+		};
+
+		cpu3: cpu@3 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0x0 0x3>;
+			enable-method = "psci";
+			cpu-idle-states = <&CPU_SLEEP_0 &CLUSTER_SLEEP_0>;	/* G45: 4.9 ile aynı */
+			#cooling-cells = <2>;	/* G36: cpufreq soğutma aygıtı */
+		};
+
+		cpu4: cpu@100 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a73";
+			reg = <0x0 0x100>;
+			enable-method = "psci";
+			cpu-idle-states = <&CPU_SLEEP_0 &CLUSTER_SLEEP_1>;	/* G45: 4.9 ile aynı */
+			#cooling-cells = <2>;	/* G36: cpufreq soğutma aygıtı */
+		};
+
+		cpu5: cpu@101 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a73";
+			reg = <0x0 0x101>;
+			enable-method = "psci";
+			cpu-idle-states = <&CPU_SLEEP_0 &CLUSTER_SLEEP_1>;	/* G45: 4.9 ile aynı */
+			#cooling-cells = <2>;	/* G36: cpufreq soğutma aygıtı */
+		};
+
+		cpu6: cpu@102 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a73";
+			reg = <0x0 0x102>;
+			enable-method = "psci";
+			cpu-idle-states = <&CPU_SLEEP_0 &CLUSTER_SLEEP_1>;	/* G45: 4.9 ile aynı */
+			#cooling-cells = <2>;	/* G36: cpufreq soğutma aygıtı */
+		};
+
+		cpu7: cpu@103 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a73";
+			reg = <0x0 0x103>;
+			enable-method = "psci";
+			cpu-idle-states = <&CPU_SLEEP_0 &CLUSTER_SLEEP_1>;	/* G45: 4.9 ile aynı */
+			#cooling-cells = <2>;	/* G36: cpufreq soğutma aygıtı */
+		};
+	};
+
+	memory@0 {
+		device_type = "memory";
+		/* Canlı DT'den (bootloader'ın doldurduğu): 0-2 GB, 2-3.5 GB, 8-8.5 GB (toplam 4 GB) */
+		reg = <0x0 0x00000000 0x0 0x80000000>,
+		      <0x0 0x80000000 0x0 0x60000000>,
+		      <0x2 0x00000000 0x0 0x20000000>;
+	};
+
+	/* G26: hisi_cma (reusable), fastboot-cma-mem (reusable), modem-socp (disabled), kerneldump (disabled)
+	 * stokta 4.9'un kullandığı RAM; G23/G24'te yanlışlıkla ayrılmıştı (~992 MB; ana hat 2,75 GB görüyordu). */
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		app-no-allocate@0 {
+			reg = <0x0 0x0 0x0 0x1000>;
+		};  /* stok: app_no_allocate */
+		/* camera-mem: reg yok (dinamik CMA havuzu), atlandi */
+		/* app_no_allocate: 0x0+0x1000 atlandi */
+		modem-share-mem@10000000 {
+			reg = <0x0 0x10000000 0x0 0xb00000>;
+			no-map;
+		};  /* stok: modem-share-mem */
+		iommu-pgtable@10c00000 {
+			reg = <0x0 0x10c00000 0x0 0x200000>;
+			no-map;
+		};  /* stok: iommu_pgtable */
+		modem-mntn@12e00000 {
+			reg = <0x0 0x12e00000 0x0 0x100000>;
+			no-map;
+		};  /* stok: modem-mntn */
+		hhee@12f00000 {
+			reg = <0x0 0x12f00000 0x0 0x600000>;
+			no-map;
+		};  /* stok: hhee */
+		fka-mem@13500000 {
+			reg = <0x0 0x13500000 0x0 0xff000>;
+			no-map;
+		};  /* stok: fka_mem */
+		mntndump@135ff000 {
+			reg = <0x0 0x135ff000 0x0 0x1000>;
+			no-map;
+		};  /* stok: mntndump */
+		ivp@13600000 {
+			reg = <0x0 0x13600000 0x0 0x100000>;
+			no-map;
+		};  /* stok: ivp */
+		sensorhub-shmem@13700000 {
+			reg = <0x0 0x13700000 0x0 0x40000>;
+			no-map;
+		};  /* stok: sensorhub-shmem */
+		sensorhub-share-mem@13740000 {
+			reg = <0x0 0x13740000 0x0 0x80000>;
+			no-map;
+		};  /* stok: sensorhub-share-mem */
+		lpmx-core@137c0000 {
+			reg = <0x0 0x137c0000 0x0 0x100000>;
+			no-map;
+		};  /* stok: lpmx-core */
+		lpmcu@138c0000 {
+			reg = <0x0 0x138c0000 0x0 0x40000>;
+			no-map;
+		};  /* stok: lpmcu */
+		sensorhub-s@13900000 {
+			reg = <0x0 0x13900000 0x0 0x700000>;
+			no-map;
+		};  /* stok: sensorhub-s */
+		bl31@14000000 {
+			reg = <0x0 0x14000000 0x0 0x400000>;
+			no-map;
+		};  /* stok: bl31 */
+		hifi-base@14400000 {
+			reg = <0x0 0x14400000 0x0 0xc00000>;
+			no-map;
+		};  /* stok: hifi-base */
+		secos@15000000 {
+			reg = <0x0 0x15000000 0x0 0x3000000>;
+			no-map;
+		};  /* stok: secos */
+		sec-camera@18000000 {
+			reg = <0x0 0x18000000 0x0 0xc00000>;
+			no-map;
+		};  /* stok: sec_camera "hisi-sec-camera" */
+		logo-buffer@18c00000 {
+			reg = <0x0 0x18c00000 0x0 0x3000000>;
+			no-map;
+		};  /* stok: logo-buffer (stokta no-map degil) */
+		modem-s@20000000 {
+			reg = <0x0 0x20000000 0x0 0x9500000>;
+			no-map;
+		};  /* stok: modem-s */
+		hifi-data@2d500000 {
+			reg = <0x0 0x2d500000 0x0 0x500000>;
+			no-map;
+		};  /* stok: hifi-data */
+		bbox-mem@2da00000 {
+			reg = <0x0 0x2da00000 0x0 0x800000>;
+			no-map;
+		};  /* stok: bbox-mem */
+		/* G26: 4.9 (v5.1/kurtarma) ile AYNI bölge ve yerleşim (stok "ramoops" düğümü): dmesg 3x128K,
+		 * console 512K, pmsg 128K, ftrace 0, ecc 0. Ana hat kaydı sonraki 4.9 açılışında /sys/fs/pstore'da.
+		 * max-reason 4 (KMSG_DUMP_SHUTDOWN): panik, oops ve normal reboot'ta tam dmesg kaydı. */
+		ramoops@2e200000 {
+			compatible = "ramoops";
+			reg = <0x0 0x2e200000 0x0 0x100000>;
+			record-size = <0x20000>;
+			console-size = <0x80000>;
+			pmsg-size = <0x20000>;
+			ftrace-size = <0x0>;
+			max-reason = <4>;
+		};
+		/* xmode-data: reg yok (dinamik CMA havuzu), atlandi */
+		dmss-pt@140000000 {
+			reg = <0x1 0x40000000 0x0 0x80000000>;
+			no-map;
+		};  /* stok: dmss_pt "dmsspt_trace_buffer" */
+		/* mperf: reg yok (dinamik CMA havuzu), atlandi */
+		/* mdmlog: reg yok (dinamik CMA havuzu), atlandi */
+	};
+
+	timer {
+		compatible = "arm,armv8-timer";
+		interrupts = <GIC_PPI 13 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>,
+			     <GIC_PPI 14 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>,
+			     <GIC_PPI 11 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>,
+			     <GIC_PPI 10 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>;
+		clock-frequency = <1920000>;	/* stok: 0x1d4c00 */
+		arm,no-tick-in-suspend;
+	};
+
+	clocks {
+		uart6clk: clk-uart6 {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <19200000>;	/* clk_summary: uart6clk 19.2 MHz */
+			clock-output-names = "uart6clk";
+		};
+
+		apb_pclk: clk-apb {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <20000000>;	/* clk_summary: apb_pclk 20 MHz */
+			clock-output-names = "apb_pclk";
+		};
+
+		/* G28: eMMC clk_xin. 4.9 sdhci_mshc_clock_init: clk_xin=192000000 (DT clk-xin 0xb71b000);
+		 * bootloader eMMC'yi HS400'de bırakıyor. Saati kernel değiştirmez (sabit). */
+		emmc_xin: clk-emmc-xin {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <192000000>;
+			clock-output-names = "emmc_xin";
+		};
+
+		/* G39: i2c6 referans saati (sabit; CRG saat sağlayıcısı yok, kernel saate dokunmaz).
+		 * 4.9: clk_i2c6 = clk_i2c6_gt/4 (clk_fll_src 128,9 MHz -> ~32,2 MHz); 4.9 sürücüsü 33 MHz ister
+		 * (canlı DT clock-rate 0x1f78a40). 33 MHz bildirilir: gerçek saat ~32,2 ise SCL hesaplanandan
+		 * biraz YAVAŞ olur (güvenli yön); clock-frequency 100 kHz ayrıca pay bırakır. */
+		i2c6clk: clk-i2c6 {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <33000000>;
+			clock-output-names = "clk_i2c6";
+		};
+
+		wdtclk: clk-wdt {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <32764>;	/* clk_summary: pclk_wd0 32764 Hz (32K mux) */
+			clock-output-names = "pclk_wd0";
+		};
+	};
+
+	/* G28: eMMC beslemeleri bootloader'dan açık geliyor (4.9 ios: vdd 3.0-3.1 V, sinyal 1.80 V).
+	 * Sabit ve hep açık tanımlı; kernel PMIC'e dokunmaz. */
+	emmc_vcc: regulator-emmc-vcc {
+		compatible = "regulator-fixed";
+		regulator-name = "emmc-vcc";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3000000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	emmc_vccq: regulator-emmc-vccq {
+		compatible = "regulator-fixed";
+		regulator-name = "emmc-vccq";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	soc {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		gic: interrupt-controller@e82b1000 {
+			compatible = "arm,gic-400";
+			#interrupt-cells = <3>;
+			#address-cells = <0>;
+			interrupt-controller;
+			reg = <0x0 0xe82b1000 0x0 0x1000>,	/* GICD (stok DT) */
+			      <0x0 0xe82b2000 0x0 0x1000>;	/* GICC (stok DT) */
+			interrupts = <GIC_PPI 9 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_HIGH)>;
+		};
+
+		/* Debug UART: hi3660 ile aynı adres/IRQ. Kullanıcı derlemesinde bootloader UART'ı
+		 * kapatıyor (cmdline console=ttyS0); pinmux ayarlanmadıysa çıkış pedlere gitmeyebilir. */
+		uart6: serial@fff32000 {
+			compatible = "arm,pl011", "arm,primecell";
+			reg = <0x0 0xfff32000 0x0 0x1000>;
+			interrupts = <GIC_SPI 79 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&uart6clk>, <&apb_pclk>;
+			clock-names = "uartclk", "apb_pclk";
+			status = "okay";
+		};
+
+		/* Bootloader açık bırakıyor (stok kernel "watchdog kick" logluyor). sp805_wdt çalışır
+		 * hâlde bulursa WDOG_HW_RUNNING ile çekirdek besler. */
+		watchdog@e8a06000 {
+			compatible = "arm,sp805", "arm,primecell";
+			reg = <0x0 0xe8a06000 0x0 0x1000>;
+			interrupts = <GIC_SPI 44 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&wdtclk>, <&apb_pclk>;
+			clock-names = "wdog_clk", "apb_pclk";
+			/* G24: ilk dolum (kesme) BL31/LPM3'te doğrudan reset (AP_S_AWDT / HI_APWDT_BL31LPM3).
+			 * karakutu,irq-is-reset: tek aşama, kesme 60 sn'de; çekirdek 15 sn'de bir besler;
+			 * reboot sırasında durdurulmaz. Panikte ekran >= 45 sn kalır. */
+			timeout-sec = <60>;
+			karakutu,irq-is-reset;
+		};
+
+		/* G28: eMMC — stok "sdhci@FF3E1000" (mshc,sdhci; 4.9 sdhci-mshc Libra, DWC MSHC). SDHCI çekirdeği
+		 * 0xff3e6000 (stok reg[0]); combo PHY 0xff3e1000 (stok reg[1]) ve sys 0xff3e2000 (stok reg[2]).
+		 * G30: PHY yalnız okunur (probe dökümü); sys'te yalnız CTRL0 bit0 (strobe kapısı, 4.9 gibi)
+		 * yazılır. IRQ SPI 279 (0x117). Temkinli: 8 bit, en çok 52 MHz SDR (HS);
+		 * HS200/HS400/DDR kapalı (caps1 maskesi SDR50|SDR104|DDR50|HS400 + sürücü quirk'leri),
+		 * donanım reset'i yok (cap-mmc-hw-reset yok), CQE yok. Yazma: mmc core'da engelli (G28). */
+		emmc: mmc@ff3e6000 {
+			compatible = "hisilicon,kirin710-dwcmshc";
+			reg = <0x0 0xff3e6000 0x0 0x1000>,
+			      <0x0 0xff3e1000 0x0 0x1000>,
+			      <0x0 0xff3e2000 0x0 0x1000>;
+			interrupts = <GIC_SPI 279 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&emmc_xin>;
+			clock-names = "core";
+			vmmc-supply = <&emmc_vcc>;
+			/* G34: vqmmc yok (4.9 stok DT'de de yok; VCCQ donanımda sabit 1.8 V). Böylece init 4.9 gibi 3.3 V
+			 * sinyal bayrağıyla (HC2 bit3=0) başlar, HS200 seçilince 1.8 V'ye (bit3=1) geçer; PMIC'e yazma yok. */
+			bus-width = <8>;
+			non-removable;
+			no-sd;
+			no-sdio;
+			cap-mmc-highspeed;
+			mmc-hs200-1_8v;
+			max-frequency = <200000000>;
+			sdhci-caps-mask = <0x80000007 0x00000000>;
+			status = "okay";
+		};
+
+		/* G23: SCTRL (stok "hisilicon,sysctrl" fff0a000). Yalnız aşağıdaki iki reset yolu kullanır. */
+		sctrl: system-controller@fff0a000 {
+			compatible = "hisilicon,kirin710-sctrl", "syscon";
+			reg = <0x0 0xfff0a000 0x0 0x1000>;
+		};
+
+		/* G32: PERI CRG (stok "hisilicon,crgctrl" fff35000) ve PCTRL (stok "hisilicon,pctrl" e8a09000).
+		 * Yalnız USB sargısı kullanır; saat sürücüsü yok (clk_ignore_unused). */
+		crg: clock-controller@fff35000 {
+			compatible = "karakutu,kirin710-crgctrl", "syscon";
+			reg = <0x0 0xfff35000 0x0 0x1000>;
+		};
+
+		/* G34: PMCTRL (stok "hisilicon,pmctrl" fff31000); yalnız okunur (CPU frekans oyu 0x2dc). */
+		pmctrl: system-controller@fff31000 {
+			compatible = "karakutu,kirin710-pmctrl", "syscon";
+			reg = <0x0 0xfff31000 0x0 0x1000>;
+		};
+
+		/* G34 (6a): coul V/I SPMI okuma, PMCTRL oyu. G35 (Tur 2, onaylı): pil sıcaklığı için 4.9'daki
+		 * birebir HKADC isteği — IPC (stok "hisilicon,HiIPCV230" e896b000, unlock 0x1acce551) mailbox-16 tx,
+		 * mailbox-0 rx (stok mailbox-0 interrupts = SPI 0xc5); SoC sıcaklığı 4.9'daki SMC 0xc5009900; sigorta. */
+		kksensor: sensor-okuma@e896b000 {
+			compatible = "karakutu,kirin710-sensor-okuma";
+			#thermal-sensor-cells = <1>;	/* G36: 0-3 cluster0/cluster1/gpu/modem, 4 = en sıcak */
+			reg = <0x0 0xe896b000 0x0 0x1000>;
+			interrupts = <GIC_SPI 197 IRQ_TYPE_LEVEL_HIGH>;
+			karakutu,ipc-unlock = <0x1acce551>;
+			karakutu,adc-pil-kanal = <10>;
+			karakutu,pmic-okuma = <&pmic>;
+			karakutu,pmctrl = <&pmctrl>;
+			karakutu,sctrl = <&sctrl>;
+			karakutu,r-coul-mohm = <10>;
+		};
+
+		/* G39 (Tur 5a, Faz 1): i2c6 — hi6523 şarj çipi (0x6B) YALNIZ OKUMA.
+		 * status="disabled": of_platform bu aygıtı OLUŞTURMAZ. kk-i2c6-kapi önce CRG kapı/reset ve pinmux'u
+		 * yalnız okur; bootloader'ın bıraktığı hâl uygunsa i2c6 aygıtını kendisi oluşturur. resets/pinctrl/CRG
+		 * saati yok: kernel IOMCU CRG'ye ve pinmux'a hiç yazmaz. Bu hatta yalnız 0x6B tanımlı (adres taraması
+		 * yapan sürücü yok, i2c-dev kapalı). i2c4 (fusb302) tanımlı değil. */
+		i2c6: i2c@ffd6a000 {
+			compatible = "snps,designware-i2c";
+			reg = <0x0 0xffd6a000 0x0 0x1000>;
+			interrupts = <GIC_SPI 117 IRQ_TYPE_LEVEL_HIGH>;	/* canlı DT <0 0x75 4> */
+			clocks = <&i2c6clk>, <&apb_pclk>;
+			clock-names = "ref", "pclk";
+			clock-frequency = <100000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+
+			sarj@6b {
+				compatible = "karakutu,hi6523-oku";
+				reg = <0x6b>;
+				/* G42 (Faz 3): şarj politikası + WDT katmanı bu I2C arka ucuyla (yalnız CONFIG_KK_SARJ_POLITIKA).
+				 * Üretim değerleri sürücüde: bant 3844/3929 mV, pencere 1200/300 sn, dinlenme 180 sn, 42/38 °C,
+				 * vbat tavanı 4150 mV, tik 5 sn, besleme 10 sn. */
+				karakutu,sarj-politika;
+			};
+		};
+
+		i2c6-kapi {
+			compatible = "karakutu,kirin710-i2c6-kapi";
+			/* G40 (onaylı, G39.A4): durum uygun değilse 4.9 gibi açılır, her yazmadan sonra geri okunur:
+			 * CRG yalnız +0x10 (PEREN) <- BIT(27) (+0x14 ve reset yazmaçlarına asla), pinmux 0 -> 1,
+			 * pinconf 4.9 değeri (pull yok, sürücü gücü 0x10) farklıysa. Geri okuma tutmazsa i2c6 oluşturulmaz. */
+			reg = <0x0 0xffd7e000 0x0 0x1000>,	/* IOMCU CRG */
+			      <0x0 0xfff11000 0x0 0x800>,	/* pinmux (iomg) */
+			      <0x0 0xfff11800 0x0 0x800>;	/* pinconf (iocg) */
+			karakutu,i2c = <&i2c6>;
+			karakutu,crg-kapi = <0x10 0x18 27>;	/* PEREN, durum (+0x10 + 0x8), bit 27 */
+			karakutu,crg-reset = <0x28 27>;		/* reset durum, bit 27 (1 = reset'te) */
+			karakutu,pinmux = <0x710 0x714>;	/* gpio212/213 iomg */
+			karakutu,pinmux-fonk = <1>;
+		};
+
+		/* G36: CPU frekansı — 4.9 hw_vote birebir (canlı DT "hw_vote" + cpu freq-vote-channel vote-src-1).
+		 * Oy PMCTRL+0x280 (little) / +0x270 (big) <- 0x00ff0000 | MHz/16; sonuç 0x2dc [15:8] / [7:0].
+		 * Tablolar canlı 4.9 DT opp_table0/1 (G22). GPU oyuna (0x290) dokunulmaz. */
+		cpufreq {
+			compatible = "karakutu,kirin710-cpufreq";
+			karakutu,pmctrl = <&pmctrl>;
+			karakutu,little-khz = <480000 960000 1152000 1325000 1440000 1536000 1709000>;
+			karakutu,little-oy = <0x280>;
+			karakutu,little-sonuc-shift = <8>;
+			karakutu,little-cpular = <0 4>;
+			karakutu,big-khz = <807000 1037000 1268000 1460000 1671000 1824000 1997000 2189000>;
+			karakutu,big-oy = <0x270>;
+			karakutu,big-sonuc-shift = <0>;
+			karakutu,big-cpular = <4 4>;
+		};
+
+		pctrl: system-controller@e8a09000 {
+			compatible = "karakutu,kirin710-pctrl", "syscon";
+			reg = <0x0 0xe8a09000 0x0 0x1000>;
+		};
+
+		/* G32: USB2 (stok "hisi_usb@ff200000" hisilicon,nov-dwc3 + "dwc3@ff100000" snps,dwc3).
+		 * reg = otg_bc / usb ahbif (ff200000). 4.9 dwc3_release() dizisi sargıda; çocuk dwc3 yalnız
+		 * cihaz modu, HS. Stok IRQ SPI 161 (0xa1). eye-diagram = stok eye_diagram_param (cihaz).
+		 * PMIC yalnız okunur (clk_abb_192 durumu); şarj IC'si ve Type-C'ye dokunulmaz. */
+		usb_glue: usb@ff200000 {
+			compatible = "karakutu,kirin710-dwc3";
+			reg = <0x0 0xff200000 0x0 0x1000>;
+			#address-cells = <2>;
+			#size-cells = <2>;
+			ranges;
+			karakutu,crg = <&crg>;
+			karakutu,pctrl = <&pctrl>;
+			karakutu,sctrl = <&sctrl>;
+			karakutu,pmic-okuma = <&pmic>;
+			karakutu,eye-diagram = <0x07ff66df>;
+
+			usb@ff100000 {
+				compatible = "snps,dwc3";
+				reg = <0x0 0xff100000 0x0 0x100000>;
+				interrupts = <GIC_SPI 161 IRQ_TYPE_LEVEL_HIGH>;
+				dr_mode = "peripheral";
+				maximum-speed = "high-speed";
+				phy_type = "utmi";
+				/* 4.9 çalışan durum: GUSB2PHYCFG 0x00102400 (UTMI 8 bit, SUSPHY=0, ENBLSLPM=0) */
+				snps,dis_u2_susphy_quirk;
+				snps,dis_enblslpm_quirk;
+			};
+		};
+
+		/* G43 (onaylı): Hi1102 Wi-Fi M0 salt okuma dökümü (kk-wifi-m0, CONFIG_KK_WIFI_M0). Yazma yok.
+		 * Önce CRG/SCTRL durum yazmaçları okunur; bir blok yalnız kapısı açık ve reset bırakılmışsa okunur,
+		 * değilse "OKUNMADI: neden". PMIC 0x3e yalnız SPMI regmap ile okunur. Bölgeler talep edilmez
+		 * (CRG/SCTRL başka sürücülerin). Varsayılan "disabled"; yalnız M0 imajında (build.sh m0) "okay". */
+		kk-wifi-m0 {
+			compatible = "karakutu,wifi-m0";
+			reg = <0x0 0xfff35000 0x0 0x1000>,	/* crg  (PERSTAT7 0x42c'ye kadar) */
+			      <0x0 0xfff0a000 0x0 0x1000>,	/* sctrl */
+			      <0x0 0xfc182000 0x0 0x18>,	/* iomg-mmc1 gpio128-133 */
+			      <0x0 0xfc182800 0x0 0x18>,	/* iocg-mmc1 */
+			      <0x0 0xe896c000 0x0 0x60>,	/* iomg; GPIO3_6 = +0x5c */
+			      <0x0 0xe8a0e000 0x0 0x1000>,	/* gpio3 PL061 */
+			      <0x0 0xfc183000 0x0 0x1000>;	/* dwmmc2 */
+			reg-names = "crg", "sctrl", "iomg-mmc1", "iocg-mmc1", "iomg", "gpio3", "dwmmc2";
+			karakutu,pmic-okuma = <&pmic>;	/* kk-spmi-syscon, sid 0 */
+			status = "disabled";
+		};
+
+		/* G44: güç teşhisi, YALNIZ OKUMA (kk-guc-teshis.c). Bölge boyutları okunan en büyük ofsete göre dar
+		 * tutulur; CRG < 0xC00, SCTRL < 0x800 NS sınırı. Yalnız test imajında "okay" (build.sh). */
+		kk-guc-teshis {
+			compatible = "karakutu,guc-teshis";
+			reg = <0x0 0xfff35000 0x0 0x430>,	/* crg: PERSTAT7 0x42c'ye kadar */
+			      <0x0 0xfff0a000 0x0 0x420>,	/* sctrl: SCBAKDATA4 0x41c'ye kadar */
+			      <0x0 0xfff31000 0x0 0x358>;	/* pmctrl: PERI_CTRL5 0x354'e kadar */
+			reg-names = "crg", "sctrl", "pmctrl";
+			status = "disabled";
+		};
+
+		/* G47 (KV7, onaylı): önceki reset nedeni YALNIZ OKUMA, açılışta 1 kez log (kk-reset-nedeni.c).
+		 * PMIC 0x1E1 kk-spmi-syscon regmap'i, SCTRL SCSYSSTAT (0x004) sctrl syscon regmap'i ile (kk-sensor-okuma
+		 * ile aynı iki yol). Adresler sürücüde sabit; yazma yolu yok (SCSYSSTAT'a yazmak = sistem reset). */
+		kk-reset-nedeni {
+			compatible = "karakutu,reset-nedeni";
+			karakutu,pmic-okuma = <&pmic>;
+			karakutu,sctrl = <&sctrl>;
+		};
+
+		/* G23: PMIC'e erişim için SPMI (stok spmi@FFF24000, spmi-channel 2). Yazmaç düzeni ana hat
+		 * hisi-spmi-controller (kirin970) ile birebir aynı (vendor sürücüyle karşılaştırıldı). */
+		spmi: spmi@fff24000 {
+			compatible = "hisilicon,kirin970-spmi-controller";
+			reg = <0x0 0xfff24000 0x0 0x1000>;
+			#address-cells = <2>;
+			#size-cells = <0>;
+			hisilicon,spmi-channel = <2>;
+
+			/* hi6555v200, slave_id 0 (stok). kk-spmi-syscon: yalnız regmap; probe'da SPMI trafiği yok. */
+			pmic: pmic@0 {
+				compatible = "karakutu,spmi-syscon", "syscon";
+				reg = <0 SPMI_USID>;
+
+				/* 4.9: set_reboot_reason() -> PMIC HRST_REG13 (0x1E1) alt 8 bit; "bootloader" = 0x01.
+				 * Bootloader açılışta bu yazmacı okuyup 0x10'a (COLDBOOT) sıfırlıyor. */
+				reboot-mode {
+					compatible = "syscon-reboot-mode";
+					offset = <0x1e1>;
+					mask = <0xff>;
+					mode-bootloader = <0x01>;
+				};
+			};
+		};
+	};
+
+	/* G23: Reset = 4.9 hisi_pm_system_reset ile aynı yol: SCTRL SCLPMCUCTRL (0x510) bit2 nmi_in -> LPM3
+	 * sistemi sıfırlar. Öncelik 192 > PSCI (129): bu yol 1 sn içinde sıfırlamazsa PSCI SYSTEM_RESET denenir. */
+	reboot-nmi-lpm3 {
+		compatible = "syscon-reboot";
+		regmap = <&sctrl>;
+		offset = <0x510>;
+		mask = <0x4>;
+		value = <0x4>;
+	};
+
+	/* G36 (Tur 3): SoC sıcaklık kontrolü. step_wise: 55 °C'de kısma başlar (yükselirken her saniye 1 adım),
+	 * 60 °C'de little <= 1152 / big <= 1460 MHz'e iner, 63 °C'de iki küme de en düşük frekansa (480 / 807 MHz)
+	 * çekilir; hedef 65 °C'nin altı. Sıcaklık sigortası (70 °C, kk-sensor-okuma) bunun üstünde ayrı çalışır.
+	 * G37 (Tur 4): yoklama 200 ms (boşta ve pasif; 4.9 IPA da 200 ms). G36'da 2 sn'lik boş yoklama, yük
+	 * başlangıcında ~10 °C/sn'lik yükselişi kaçırdı (1,4 sn'de 71,2 °C). Sensör önbelleği 100 ms. */
+	thermal-zones {
+		soc-max-thermal {
+			polling-delay-passive = <200>;
+			polling-delay = <200>;
+			thermal-sensors = <&kksensor 4>;
+			trips {
+				soc_kisma: kisma { temperature = <55000>; hysteresis = <2000>; type = "passive"; };
+				soc_sert: sert { temperature = <60000>; hysteresis = <2000>; type = "passive"; };
+				soc_taban: taban { temperature = <63000>; hysteresis = <2000>; type = "passive"; };
+			};
+			cooling-maps {
+				map-kisma {
+					trip = <&soc_kisma>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>, <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map-sert {
+					trip = <&soc_sert>;
+					cooling-device = <&cpu0 2 THERMAL_NO_LIMIT>, <&cpu4 4 THERMAL_NO_LIMIT>;
+				};
+				map-taban {
+					trip = <&soc_taban>;
+					cooling-device = <&cpu0 6 6>, <&cpu4 7 7>;
+				};
+			};
+		};
+		cluster0-thermal { polling-delay-passive = <0>; polling-delay = <5000>; thermal-sensors = <&kksensor 0>;
+			trips { c0-hot { temperature = <125000>; hysteresis = <0>; type = "hot"; }; }; };
+		cluster1-thermal { polling-delay-passive = <0>; polling-delay = <5000>; thermal-sensors = <&kksensor 1>;
+			trips { c1-hot { temperature = <125000>; hysteresis = <0>; type = "hot"; }; }; };
+		gpu-thermal { polling-delay-passive = <0>; polling-delay = <5000>; thermal-sensors = <&kksensor 2>;
+			trips { g-hot { temperature = <125000>; hysteresis = <0>; type = "hot"; }; }; };
+		modem-thermal { polling-delay-passive = <0>; polling-delay = <5000>; thermal-sensors = <&kksensor 3>;
+			trips { m-hot { temperature = <125000>; hysteresis = <0>; type = "hot"; }; }; };
+	};
+};

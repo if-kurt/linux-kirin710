@@ -1244,6 +1244,355 @@ static const struct dwcmshc_pltfm_data sdhci_dwcmshc_pdata = {
 	},
 };
 
+/*
+ * Kara Kutu (G28): HiSilicon Kirin 710 eMMC denetleyicisi (vendor 4.9 "sdhci-mshc" Libra; DWC MSHC).
+ * 4.9 her RESET_ALL'dan sonra sdhci_mshc_select_card_type() ile şu üç üretici yazmacını ayarlıyor;
+ * aynısı burada. Temkinli mod: legacy/HS (<= 52 MHz) SDR; HS200/HS400/DDR, UHS ve donanım reset'i
+ * kapalı; boot bölümlerine erişim yok (BOOTPART_NOACC).
+ *
+ * G30: 4.9 sdhci_mshc_config_strobe_clk() taşındı. mmc_sys (DT reg[2], 0xff3e2000) EMMC_SYS_CTRL0
+ * bit0 GT_STROBE_RX_CLK: HS400'de 0, diğer tüm zamanlamalarda 1. 4.9'daki gibi set_uhs_signaling'in
+ * başında, sdhci_set_ios kart saatini (CLOCK_CARD_EN) kapattıktan sonra ve set_clock ile açmadan önce
+ * yazılır; yalnız bu bit oku-değiştir-yaz. Combo PHY (DT reg[1], 0xff3e1000) yalnız okunur (probe
+ * dökümü). SCTRL'e (IP/PHY reset, saat kapısı) dokunulmaz.
+ */
+#define KK_MSHC_CTRL_R		0x8	/* vendor area1 + */
+#define KK_CMD_CONFLICT_CHECK	BIT(0)
+#define KK_SW_CG_DIS		BIT(4)
+#define KK_ACCESS_ALL_REGION	BIT(5)
+#define KK_MBIU_CTRL		0x10
+#define KK_WRITE_OSRC_LMT_MASK	(0x7 << 24)
+#define KK_WRITE_OSRC_LMT	(0x3 << 24)
+#define KK_EMMC_CTRL_R		0x2c	/* vendor area1 + ; bit8 ENH_STROBE_ENABLE */
+#define KK_AT_CTRL_R		0x40	/* vendor area1 + ; bit4 SW_TUNE_EN */
+#define KK_AT_STAT_R		0x44	/* vendor area1 + ; [7:0] CENTER_PH_CODE */
+
+/* mmc_sys (4.9 sdhci-dwc-mshc.h) */
+#define KK_SYS_CTRL0		0x00
+#define KK_GT_STROBE_RX_CLK	BIT(0)
+#define KK_SYS_CTRL1		0x04	/* bit0 CRESETN_RX, bit8 TUNING_SEL, bit9 TUNING_EXTEND */
+#define KK_SYS_MTCMOS_EN	0x08
+#define KK_SYS_MTCMOS_ACK	0x0c
+#define KK_SYS_LHEN_IN		0x18
+#define KK_SYS_LHEN_INB		0x1c
+#define KK_SYS_PHY_ISOEN	0x20
+#define KK_SYS_CRG_CFG1		0x2c
+#define KK_GT_PCLK_EMMC_PHY	BIT(3)
+
+/* combo PHY (4.9 sdhci-dwc-mshc.h) */
+#define KK_PHY_PHYINITCTRL	0x004
+#define KK_PHY_PHYINITSTAT	0x008
+#define KK_PHY_IMPCTRL		0x024
+#define KK_PHY_IMPSTATUS	0x028
+#define KK_PHY_CMD_DLY_CTRL	0x230
+#define KK_PHY_DATENA_DLY	0x23c
+#define KK_PHY_PHYCTRL2		0x248
+#define KK_PHY_DLY_CTL		0x250
+#define KK_PHY_DLY_CTL1		0x254
+#define KK_PHY_DLY_CTL2		0x258
+#define KK_PHY_IOCTL_PUPD	0x260
+#define KK_PHY_IOCTL_RONSEL_1	0x264
+#define KK_PHY_IOCTL_RONSEL_2	0x268
+#define KK_PHY_IOCTL_IOE	0x26c
+
+struct kk_kirin710_priv {
+	void __iomem *phy;	/* yalnız okunur */
+	void __iomem *sys;	/* yalnız KK_SYS_CTRL0 bit0 yazılır */
+};
+
+/* Yalnız okuma: denetleyici standart + vendor + mmc_sys (+ PHY, APB saati açıksa). */
+static void kk_kirin710_dump(struct sdhci_host *host, struct kk_kirin710_priv *k, const char *ne)
+{
+	struct device *dev = mmc_dev(host->mmc);
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct dwcmshc_priv *priv = sdhci_pltfm_priv(pltfm_host);
+	int a1 = priv->vendor_specific_area1;
+	u32 crg;
+
+	dev_info(dev, "kk: dokum[%s] std: PSTATE=0x%08x HCTL=0x%02x CLK=0x%04x HC2=0x%04x\n", ne,
+		 sdhci_readl(host, SDHCI_PRESENT_STATE), sdhci_readb(host, SDHCI_HOST_CONTROL),
+		 sdhci_readw(host, SDHCI_CLOCK_CONTROL), sdhci_readw(host, SDHCI_HOST_CONTROL2));
+	if (a1)
+		dev_info(dev, "kk: dokum[%s] vendor(0x%x): MSHC_CTRL=0x%02x MBIU=0x%08x EMMC_CTRL=0x%04x AT_CTRL=0x%08x AT_STAT=0x%08x\n",
+			 ne, a1, sdhci_readb(host, a1 + KK_MSHC_CTRL_R),
+			 sdhci_readl(host, a1 + KK_MBIU_CTRL),
+			 sdhci_readw(host, a1 + KK_EMMC_CTRL_R),
+			 sdhci_readl(host, a1 + KK_AT_CTRL_R),
+			 sdhci_readl(host, a1 + KK_AT_STAT_R));
+	if (!k)
+		return;
+	crg = readl(k->sys + KK_SYS_CRG_CFG1);
+	dev_info(dev, "kk: dokum[%s] sys: CTRL0=0x%08x CTRL1=0x%08x MTCMOS_EN=0x%08x MTCMOS_ACK=0x%08x LHEN_IN=0x%08x LHEN_INB=0x%08x ISOEN=0x%08x CRG_CFG1=0x%08x\n",
+		 ne, readl(k->sys + KK_SYS_CTRL0), readl(k->sys + KK_SYS_CTRL1),
+		 readl(k->sys + KK_SYS_MTCMOS_EN), readl(k->sys + KK_SYS_MTCMOS_ACK),
+		 readl(k->sys + KK_SYS_LHEN_IN), readl(k->sys + KK_SYS_LHEN_INB),
+		 readl(k->sys + KK_SYS_PHY_ISOEN), crg);
+	if (!(crg & KK_GT_PCLK_EMMC_PHY)) {
+		dev_info(dev, "kk: dokum[%s] phy: APB saati kapali gorunuyor (CRG_CFG1 bit3=0), okunmadi\n", ne);
+		return;
+	}
+	dev_info(dev, "kk: dokum[%s] phy: INITCTRL=0x%08x INITSTAT=0x%08x IMPCTRL=0x%08x IMPSTAT=0x%08x CMD_DLY=0x%08x DATENA_DLY=0x%08x PHYCTRL2=0x%08x\n",
+		 ne, readl(k->phy + KK_PHY_PHYINITCTRL), readl(k->phy + KK_PHY_PHYINITSTAT),
+		 readl(k->phy + KK_PHY_IMPCTRL), readl(k->phy + KK_PHY_IMPSTATUS),
+		 readl(k->phy + KK_PHY_CMD_DLY_CTRL), readl(k->phy + KK_PHY_DATENA_DLY),
+		 readl(k->phy + KK_PHY_PHYCTRL2));
+	dev_info(dev, "kk: dokum[%s] phy: DLY_CTL=0x%08x DLY_CTL1=0x%08x DLY_CTL2=0x%08x PUPD=0x%08x RONSEL1=0x%08x RONSEL2=0x%08x IOE=0x%08x\n",
+		 ne, readl(k->phy + KK_PHY_DLY_CTL), readl(k->phy + KK_PHY_DLY_CTL1),
+		 readl(k->phy + KK_PHY_DLY_CTL2), readl(k->phy + KK_PHY_IOCTL_PUPD),
+		 readl(k->phy + KK_PHY_IOCTL_RONSEL_1), readl(k->phy + KK_PHY_IOCTL_RONSEL_2),
+		 readl(k->phy + KK_PHY_IOCTL_IOE));
+}
+
+static void dwcmshc_kirin710_reset(struct sdhci_host *host, u8 mask)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct dwcmshc_priv *priv = sdhci_pltfm_priv(pltfm_host);
+	int a1 = priv->vendor_specific_area1;
+	u16 e;
+	u8 m;
+	u32 b;
+
+	dwcmshc_reset(host, mask);
+	if (!(mask & SDHCI_RESET_ALL) || !a1)
+		return;
+
+	/* G30 teşhis: RESET_ALL'ın vendor alanını sıfırlayıp sıfırlamadığını görmek için (yalnız okuma). */
+	kk_kirin710_dump(host, priv->priv, "reset sonrasi");
+
+	e = sdhci_readw(host, a1 + DWCMSHC_EMMC_CONTROL);
+	sdhci_writew(host, e | DWCMSHC_CARD_IS_EMMC, a1 + DWCMSHC_EMMC_CONTROL);
+	m = sdhci_readb(host, a1 + KK_MSHC_CTRL_R);
+	m &= ~KK_CMD_CONFLICT_CHECK;
+	m |= KK_SW_CG_DIS | KK_ACCESS_ALL_REGION;
+	sdhci_writeb(host, m, a1 + KK_MSHC_CTRL_R);
+	b = sdhci_readl(host, a1 + KK_MBIU_CTRL);
+	b = (b & ~KK_WRITE_OSRC_LMT_MASK) | KK_WRITE_OSRC_LMT;
+	sdhci_writel(host, b, a1 + KK_MBIU_CTRL);
+}
+
+/* 4.9 sdhci_mshc_config_strobe_clk() (yalnız strobe kapısı kısmı) + sdhci_mshc_set_uhs_signaling() sırası. */
+static void dwcmshc_kirin710_set_uhs_signaling(struct sdhci_host *host, unsigned int timing)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct dwcmshc_priv *priv = sdhci_pltfm_priv(pltfm_host);
+	struct kk_kirin710_priv *k = priv->priv;
+	u32 once, yeni;
+
+	if (k) {
+		once = readl(k->sys + KK_SYS_CTRL0);
+		if (timing == MMC_TIMING_MMC_HS400)
+			yeni = once & ~KK_GT_STROBE_RX_CLK;
+		else
+			yeni = once | KK_GT_STROBE_RX_CLK;
+		writel(yeni, k->sys + KK_SYS_CTRL0);
+		dev_info(mmc_dev(host->mmc),
+			 "kk: strobe kapisi (zamanlama %u): CTRL0 0x%08x -> 0x%08x, geri okunan 0x%08x\n",
+			 timing, once, yeni, readl(k->sys + KK_SYS_CTRL0));
+	}
+	/* 4.9'daki INV_DATA (HC2 bit9) yalnız DDR52/HS400'de; bu zamanlamalar burada kapalı. */
+	dwcmshc_set_uhs_signaling(host, timing);
+}
+
+static const struct sdhci_ops sdhci_dwcmshc_kirin710_ops = {
+	.set_clock		= sdhci_set_clock,
+	.set_bus_width		= sdhci_set_bus_width,
+	.set_uhs_signaling	= dwcmshc_kirin710_set_uhs_signaling,
+	.get_max_clock		= dwcmshc_get_max_clock,
+	.reset			= dwcmshc_kirin710_reset,
+	.adma_write_desc	= dwcmshc_adma_write_desc,
+	.irq			= dwcmshc_cqe_irq_handler,
+};
+
+/*
+ * G34: HS200 tuning — 4.9 sdhci_execute_tuning() (standart SDHCI tuning) + sdhci_mshc_soft_tuning() taşıması.
+ * 4.9 akışı: önce standart tuning; ardından HER DURUMDA yazılım tuning'i (64 faz, her fazda CMD21). Standart tuning
+ * başarısızsa yazılımın en iyi fazı, başarılıysa donanımın bulduğu faz (AT_STAT CENTER_PH_CODE) kullanılır.
+ * Faz ayarı: sys CTRL1 TUNING_SEL/EXTEND (faz < 64 -> ikisi 0) + vendor AT_STAT[7:0]; SW_TUNE_EN yazılım tuning'i
+ * boyunca açık. Tek sapma: 4.9 memcmp(..., sizeof(blksz)) desenin yalnız 4 baytını karşılaştırıyordu; burada
+ * mmc_send_tuning() bloğun TAMAMINI karşılaştırır (daha katı). CMD21'ler mmc core filtresinden geçer (katı modda
+ * yalnız okuma, arg 0). kk_tuning_hata=1 (sınama) tuning'i zorla başarısız yapar -> mmc core HS200'ü bırakır.
+ */
+static bool kk_tuning_hata;
+module_param(kk_tuning_hata, bool, 0644);
+MODULE_PARM_DESC(kk_tuning_hata, "Kara Kutu G34 sinama: HS200 tuning'ini zorla basarisiz yap (HS'ye geri dusus)");
+
+#define KK_SYS_TUNING_SEL	BIT(8)
+#define KK_SYS_TUNING_EXTEND	BIT(9)
+#define KK_SW_TUNE_EN		BIT(4)
+#define KK_CENTER_PH_MASK	0xff
+#define KK_TUNING_LOOP		64	/* 4.9 TUNING_LOOP_64 (tuning_128_flag yok) */
+#define KK_TUNING_MIN_CONT	20	/* 4.9 TUNING_MIN_CONTINUOUS */
+
+/* 4.9 sdhci_mshc_set_tuning_phase(); SW_TUNE_EN yazılım tuning'i sırasında dışarıda açık tutulur. */
+static void kk_set_tuning_phase(struct sdhci_host *host, struct kk_kirin710_priv *k, int a1, u32 val)
+{
+	u32 r = readl(k->sys + KK_SYS_CTRL1);
+
+	if (val >= KK_TUNING_LOOP) {
+		val -= KK_TUNING_LOOP;
+		r |= KK_SYS_TUNING_EXTEND | KK_SYS_TUNING_SEL;
+	} else {
+		r &= ~(KK_SYS_TUNING_EXTEND | KK_SYS_TUNING_SEL);
+	}
+	writel(r, k->sys + KK_SYS_CTRL1);
+	r = sdhci_readl(host, a1 + KK_AT_STAT_R);
+	r = (r & ~KK_CENTER_PH_MASK) | val;
+	sdhci_writel(host, r, a1 + KK_AT_STAT_R);
+}
+
+/* 4.9 sdhci_mshc_find_best_phase(): en uzun ardışık geçen pencerenin ortası (bit0 ve bit63 geçtiyse sarmalı). */
+static int kk_find_best_phase(struct device *dev, u64 rec)
+{
+	u32 loop = 0, max_loop = KK_TUNING_LOOP, max_len = 0, cur_len = 0, max_start = 0, cur_start = 0;
+	u64 r = rec;
+	int best;
+
+	if ((r & 0x1) && (r & ((u64)1 << 63)))
+		max_loop = KK_TUNING_LOOP * 2;
+	do {
+		if (r & 0x1) {
+			if (!cur_len)
+				cur_start = loop;
+			cur_len++;
+			if (loop == max_loop - 1 && cur_len > max_len) {
+				max_len = cur_len;
+				max_start = cur_start;
+			}
+		} else if (cur_len) {
+			if (cur_len > max_len) {
+				max_len = cur_len;
+				max_start = cur_start;
+			}
+			cur_len = 0;
+		}
+		loop++;
+		r = (r >> 1) | (r << 63);	/* 4.9 cror(data, 1) */
+	} while (loop < max_loop);
+	if (!max_len)
+		return -1;
+	if (max_len < KK_TUNING_MIN_CONT)
+		dev_info(dev, "kk: hs200 tuning: en uzun pencere %u < %u\n", max_len, KK_TUNING_MIN_CONT);
+	if (max_len > KK_TUNING_LOOP)
+		max_len = KK_TUNING_LOOP;
+	best = max_start + max_len / 2;
+	if (best >= KK_TUNING_LOOP)
+		best -= KK_TUNING_LOOP;
+	return best;
+}
+
+/* 4.9 sdhci_mshc_soft_tuning(host, opcode, set) */
+static int kk_kirin710_soft_tuning(struct sdhci_host *host, u32 opcode, bool set)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct dwcmshc_priv *priv = sdhci_pltfm_priv(pltfm_host);
+	struct kk_kirin710_priv *k = priv->priv;
+	struct device *dev = mmc_dev(host->mmc);
+	int a1 = priv->vendor_specific_area1, best, gecen = 0, ret = 0;
+	u32 hw_phase, i;
+	u64 rec = 0;
+	u16 r16;
+
+	hw_phase = sdhci_readl(host, a1 + KK_AT_STAT_R) & KK_CENTER_PH_MASK;
+	r16 = sdhci_readw(host, SDHCI_HOST_CONTROL2);
+	sdhci_writew(host, r16 & ~SDHCI_CTRL_TUNED_CLK, SDHCI_HOST_CONTROL2);
+	r16 = sdhci_readw(host, a1 + KK_AT_CTRL_R);
+	sdhci_writew(host, r16 | KK_SW_TUNE_EN, a1 + KK_AT_CTRL_R);
+	kk_set_tuning_phase(host, k, a1, 0);
+	for (i = 0; i < KK_TUNING_LOOP; i++) {
+		if (!mmc_send_tuning(host->mmc, opcode, NULL)) {
+			rec |= (u64)1 << i;
+			gecen++;
+		}
+		kk_set_tuning_phase(host, k, a1, i + 1);	/* 4.9 add_tuning_phase: sayaç++ sonra ayarla */
+	}
+	best = kk_find_best_phase(dev, rec);
+	if (best < 0) {
+		dev_warn(dev, "kk: hs200 tuning: hicbir faz gecmedi (kayit 0x%016llx)\n", rec);
+		ret = -EIO;
+		goto bitir;
+	}
+	if (set) {
+		kk_set_tuning_phase(host, k, a1, best);
+	} else {
+		kk_set_tuning_phase(host, k, a1, hw_phase);
+	}
+	dev_info(dev, "kk: hs200 tuning: yazilim kaydi=0x%016llx (%d/%u faz gecti), yazilim en iyi=%d, donanim fazi=%u -> kullanilan=%u (%s)\n",
+		 rec, gecen, KK_TUNING_LOOP, best, hw_phase, set ? best : hw_phase,
+		 set ? "standart tuning basarisiz: yazilim fazi" : "standart tuning fazi");
+bitir:
+	r16 = sdhci_readw(host, a1 + KK_AT_CTRL_R);
+	sdhci_writew(host, r16 & ~KK_SW_TUNE_EN, a1 + KK_AT_CTRL_R);
+	r16 = sdhci_readw(host, SDHCI_HOST_CONTROL2);
+	sdhci_writew(host, r16 | SDHCI_CTRL_TUNED_CLK, SDHCI_HOST_CONTROL2);
+	sdhci_writew(host, SDHCI_MAKE_BLKSZ(SDHCI_DEFAULT_BOUNDARY_ARG, 512), SDHCI_BLOCK_SIZE);
+	return ret;
+}
+
+static int dwcmshc_kirin710_execute_tuning(struct mmc_host *mmc, u32 opcode)
+{
+	struct sdhci_host *host = mmc_priv(mmc);
+	struct device *dev = mmc_dev(mmc);
+	bool hw_ok;
+	int err;
+
+	if (kk_tuning_hata) {
+		dev_warn(dev, "kk: hs200 tuning ZORLA basarisiz (kk_tuning_hata=1, sinama)\n");
+		return -EIO;
+	}
+	err = sdhci_execute_tuning(mmc, opcode);	/* 4.9 ile aynı standart SDHCI tuning */
+	hw_ok = !err && !host->tuning_err && (sdhci_readw(host, SDHCI_HOST_CONTROL2) & SDHCI_CTRL_TUNED_CLK);
+	dev_info(dev, "kk: hs200 standart tuning: err=%d tuning_err=%d TUNED_CLK=%d -> %s\n", err, host->tuning_err,
+		 !!(sdhci_readw(host, SDHCI_HOST_CONTROL2) & SDHCI_CTRL_TUNED_CLK), hw_ok ? "basarili" : "basarisiz");
+	return kk_kirin710_soft_tuning(host, opcode, !hw_ok);
+}
+
+/* sdhci_setup_host()'tan (ilk RESET_ALL'dan) önce çağrılır: bölgeleri eşle, hiçbir şey yazmadan dök. */
+static int dwcmshc_kirin710_init(struct device *dev, struct sdhci_host *host,
+				 struct dwcmshc_priv *dwc_priv)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct kk_kirin710_priv *k;
+
+	k = devm_kzalloc(dev, sizeof(*k), GFP_KERNEL);
+	if (!k)
+		return -ENOMEM;
+	k->phy = devm_platform_ioremap_resource(pdev, 1);
+	if (IS_ERR(k->phy))
+		return dev_err_probe(dev, PTR_ERR(k->phy), "kk: combo PHY (reg[1]) eslenemedi\n");
+	k->sys = devm_platform_ioremap_resource(pdev, 2);
+	if (IS_ERR(k->sys))
+		return dev_err_probe(dev, PTR_ERR(k->sys), "kk: mmc_sys (reg[2]) eslenemedi\n");
+
+	kk_kirin710_dump(host, k, "probe, degisiklik oncesi");
+	dwc_priv->priv = k;
+	host->mmc_host_ops.execute_tuning = dwcmshc_kirin710_execute_tuning;	/* G34 */
+	return 0;
+}
+
+static void dwcmshc_kirin710_postinit(struct sdhci_host *host, struct dwcmshc_priv *dwc_priv)
+{
+	struct mmc_host *mmc = host->mmc;
+
+	mmc->caps &= ~(MMC_CAP_UHS | MMC_CAP_1_8V_DDR | MMC_CAP_3_3V_DDR | MMC_CAP_HW_RESET);
+	/* G34: HS200 (yalnız 1.8 V, DT "mmc-hs200-1_8v") açık; HS200 1.2 V, HS400/ES, CQE kapalı. */
+	mmc->caps2 &= ~(MMC_CAP2_HS200_1_2V_SDR | MMC_CAP2_HS400 | MMC_CAP2_HS400_ES | MMC_CAP2_CQE);
+	mmc->caps2 |= MMC_CAP2_BOOTPART_NOACC;
+	dev_info(mmc_dev(mmc), "kk: kirin710 eMMC: HS200(1.8V)=%d, f_max=%u Hz, area1=0x%x, salt okuma, kk_tuning_hata=%d\n",
+		 !!(mmc->caps2 & MMC_CAP2_HS200_1_8V_SDR), mmc->f_max, dwc_priv->vendor_specific_area1, kk_tuning_hata);
+	/* G30: sdhci_setup_host sonrası (RESET_ALL'lar yapılmış, kart komutu yok) — yalnız okuma. */
+	kk_kirin710_dump(host, dwc_priv->priv, "kurulum sonrasi");
+}
+
+static const struct dwcmshc_pltfm_data sdhci_dwcmshc_kirin710_pdata = {
+	.pdata = {
+		.ops = &sdhci_dwcmshc_kirin710_ops,
+		.quirks = SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN,
+		.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN | SDHCI_QUIRK2_BROKEN_DDR50,	/* G34: BROKEN_HS200 kaldırıldı */
+	},
+	.init = dwcmshc_kirin710_init,
+	.postinit = dwcmshc_kirin710_postinit,
+};
+
 #ifdef CONFIG_ACPI
 static const struct dwcmshc_pltfm_data sdhci_dwcmshc_bf3_pdata = {
 	.pdata = {
@@ -1384,6 +1733,10 @@ static const struct of_device_id sdhci_dwcmshc_dt_ids[] = {
 	{
 		.compatible = "rockchip,rk3568-dwcmshc",
 		.data = &sdhci_dwcmshc_rk35xx_pdata,
+	},
+	{
+		.compatible = "hisilicon,kirin710-dwcmshc",
+		.data = &sdhci_dwcmshc_kirin710_pdata,
 	},
 	{
 		.compatible = "snps,dwcmshc-sdhci",

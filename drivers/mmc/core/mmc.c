@@ -1593,9 +1593,23 @@ static int mmc_hs200_tuning(struct mmc_card *card)
  * In the case of a resume, "oldcard" will contain the card
  * we're trying to reinitialise.
  */
+/*
+ * Kara Kutu (G34): HS200 seçimi ya da tuning başarısız olursa host'tan HS200 yeteneği kaldırılır ve init hata
+ * döner; mmc_rescan bir sonraki frekansta kartı CMD0'dan yeniden açar (HS200'süz -> HS). Kart her durumda açılır.
+ */
+static void kk_hs200_vazgec(struct mmc_host *host, const char *ne, int err)
+{
+	if (!(host->caps2 & MMC_CAP2_HS200))
+		return;
+	host->caps2 &= ~(MMC_CAP2_HS200 | MMC_CAP2_HS400 | MMC_CAP2_HS400_ES);
+	pr_warn("%s: kk: HS200 %s basarisiz (%d): HS200 birakildi, kart HS ile yeniden acilacak\n",
+		mmc_hostname(host), ne, err);
+}
+
 static int mmc_init_card(struct mmc_host *host, u32 ocr,
 	struct mmc_card *oldcard)
 {
+	bool kk_hs200_deneme;
 	struct mmc_card *card;
 	int err;
 	u32 cid[4];
@@ -1806,14 +1820,20 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 	/*
 	 * Select timing interface
 	 */
+	kk_hs200_deneme = !!(card->mmc_avail_type & EXT_CSD_CARD_TYPE_HS200);
 	err = mmc_select_timing(card);
-	if (err)
+	if (err) {
+		if (kk_hs200_deneme)	/* G34: HS200 seçimi başarısız -> HS200 bırakılır, kart yeniden HS açılır */
+			kk_hs200_vazgec(host, "secim", err);
 		goto free_card;
+	}
 
 	if (mmc_card_hs200(card)) {
 		host->doing_init_tune = 1;
 
 		err = mmc_hs200_tuning(card);
+		if (err)	/* G34: tuning başarısız -> HS200 bırakılır */
+			kk_hs200_vazgec(host, "tuning", err);
 		if (!err)
 			err = mmc_select_hs400(card);
 

@@ -16,6 +16,7 @@ obj-$(CONFIG_KK_SARJ_SAHTE)	+= kk-sarj-sahte.o
 obj-$(CONFIG_KK_SARJ_POLITIKA)	+= kk-sarj.o
 obj-$(CONFIG_KK_PIL_KORUMA)	+= kk-pil-koruma.o
 obj-$(CONFIG_KK_HI6523_DENEY)	+= kk-hi6523-deney.o
+obj-$(CONFIG_KK_WIFI_M0)	+= kk-wifi-m0.o
 obj-$(CONFIG_KK_GUC_TESHIS)	+= kk-guc-teshis.o
 obj-$(CONFIG_KK_RESET_NEDENI)	+= kk-reset-nedeni.o
 obj-$(CONFIG_KK_S1_SAHTE)	+= kk-s1-sahte.o

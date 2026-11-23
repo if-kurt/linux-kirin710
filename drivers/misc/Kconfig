@@ -690,6 +690,16 @@ config KK_SARJ_TEST
 	  "test_besleme_kes" (stop feeding the chip watchdog without touching
 	  CHG_EN). Never in the production image.
 
+config KK_WIFI_M0
+	bool "Kara Kutu: Hi1102/SDIO M0 read-only state dump"
+	depends on OF
+	help
+	  Kara Kutu (G42, Wi-Fi slice 2): reads (never writes) the clock gate,
+	  reset, pinmux, GPIO and PMIC 32 kHz state needed to bring up the
+	  Hi1102 SDIO Wi-Fi. A block's registers are read only after its gate
+	  and reset status show it accessible. Not in device images unless
+	  approved.
+
 config KK_HI6523_O1
 	bool "Kara Kutu: hi6523 reader also reads STATUS0 (0x06) and 0x8E"
 	depends on KK_HI6523_OKU

@@ -11,7 +11,7 @@ Türkçe özet: Huawei P30 Lite (Kirin 710) kartını başsız (ekransız) çal�
 | Area | State |
 |---|---|
 | Device tree (`kirin710-huawei-marie*.dts`) | boots; base plus P1 (power saving), M1 (Wi-Fi) and combined variants |
-| eMMC (DesignWare MSHC, HS200) | read works; writes only through a gated, time-boxed window (closed by default) |
+| eMMC (DesignWare MSHC, HS200) | read works; the root filesystem is mounted read-write on the userdata partition; the block-layer write gate covers that whole partition, a kernel runaway-write guard closes it for the rest of the boot, and writes anywhere else stay blocked |
 | USB2 (DWC3 wrapper) | works as a gadget (USB NCM networking) |
 | Charging / battery | hi6523 charge-enable policy with a register allow-list, chip watchdog feed, low-battery protection |
 | Sensors / thermal fuse | battery and SoC temperature log; fuse stops charging and reboots to the bootloader |
@@ -19,7 +19,7 @@ Türkçe özet: Huawei P30 Lite (Kirin 710) kartını başsız (ekransız) çal�
 | Reboot mode | reboot reason through the PMIC syscon (reboot-mode) |
 | cpufreq | ported 4.9 hardware-vote mechanism |
 | cpuidle | PSCI CPU_SUSPEND via hvc; deepest state off by default and enabled from user space with a watchdog |
-| Wi-Fi (Hi1102, SDIO) | ROM loader, firmware download, station mode; associates (open / WPA2-PSK); data path is behind an L3 filter, so internet access is limited |
+| Wi-Fi (Hi1102, SDIO) | ROM loader, firmware download, station mode; associates (open / WPA2-PSK); SDIO runs at 3.2 MHz; IPv4 internet works behind an L3 filter that rejects everything else |
 | zram | works (swap on RAM only) |
 | Display / DSS, GPU, audio, modem, camera, Bluetooth | not working (not ported) |
 | poweroff / halt | not available: the SoC hangs after "Power down" and the watchdog resets it; use reboot |
@@ -39,9 +39,9 @@ The kernel is deliberately restrictive on this hardware because a wrong write ca
 
 ## Third-party code / Kaynak notu
 
-`drivers/misc/kk-hi1102-port/` contains the Hi1102 Wi-Fi/BT host-side driver layers. They were carried over from Huawei's open-source kernel release for this device; the base of our 4.9 fork is `jglasovic/android_kernel_huawei_kirin710` at `3ca6a91`. The code is used under the GPL-2.0 terms of that release, and the original copyright lines are kept unchanged. It was adapted for 6.12 and restricted to station mode (`kk_inc`, `kk_stub` and `kk_*.c` are ours). The Hi1102 firmware images are **not** included; the build takes them from a path you provide (`CONFIG_KK_HI1102_FW_DIR`).
+`drivers/misc/kk-hi1102-port/` contains the Hi1102 Wi-Fi/BT host-side driver layers. They were carried over from Huawei's open-source kernel release for this device; the base of our 4.9 fork is `jglasovic/android_kernel_huawei_kirin710` at `3ca6a91`. The code is used under the GPL-2.0 terms of that release, and the original copyright lines are kept unchanged. It was adapted for 6.12 and restricted to station mode (`kk_inc`, `kk_stub` and `kk_*.c` are ours). The Hi1102 firmware images and the vendor config INI are **not** included. You take them from your own device with `tools/fetch-hi1102-files.sh` of the [kara-kutu](https://github.com/if-kurt/kara-kutu) repository (read-only access), and the build reads them from paths you provide: `CONFIG_KK_HI1102_FW_DIR` for the firmware and `CONFIG_KK_HI1102_INI` for the INI (the build fails if the INI path is empty).
 
-Hi1102 Wi-Fi sürücü dosyaları Huawei'nin açık kaynak çekirdek yayınından taşınmıştır (4.9 çatalımızın tabanı `jglasovic/android_kernel_huawei_kirin710` @ `3ca6a91`), GPL-2.0 kapsamındadır; özgün telif satırları korunmuştur.
+Hi1102 Wi-Fi sürücü dosyaları Huawei'nin açık kaynak çekirdek yayınından taşınmıştır (4.9 çatalımızın tabanı `jglasovic/android_kernel_huawei_kirin710` @ `3ca6a91`), GPL-2.0 kapsamındadır; özgün telif satırları korunmuştur. Wi-Fi firmware'i ve yapılandırma INI dosyası depoda yoktur; kendi cihazınızdan `tools/fetch-hi1102-files.sh` ile alıp derlemede `CONFIG_KK_HI1102_FW_DIR` ve `CONFIG_KK_HI1102_INI` ile verirsiniz.
 
 ## Building / Derleme
 

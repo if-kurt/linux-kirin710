@@ -93,6 +93,15 @@ MODULE_PARM_DESC(pmic_yaz, "1 = PMIC 0x3E 0x00 -> 0x01 tek yazmasina izin (W1; v
 #define KK_PMIC_DURUM	"DERLENMEDI"
 #endif
 
+#if IS_ENABLED(CONFIG_KK_SDIO_KAPI_SDIO25)
+static bool kk_sdio25;
+module_param_named(sdio25, kk_sdio25, bool, 0444);
+MODULE_PARM_DESC(sdio25, "1 = SDIO saatini PPLL0 yoluna alan CRG adimina izin (G62-3; DT karakutu,sdio25-ciu-hz de gerekir; varsayilan 0)");
+#define KK_S25_DURUM	(kk_sdio25 ? "DERLENDI, sdio25=1 (CRG saat adimi ACIK)" : "DERLENDI, sdio25=0 (adim kapali)")
+#else
+#define KK_S25_DURUM	"DERLENMEDI"
+#endif
+
 /* CRG (fff35000) */
 #define CRG_PEREN0	0x000
 #define CRG_PERCLKEN0	0x008
@@ -156,6 +165,13 @@ static const struct kk_sdio_izin_t kk_sdio_izin[] = {
 	{ KB_IOMG_MMC1,	0x0c,		1,	    "W6 X1 iomg-mmc1 pin3 SDIO" },
 	{ KB_IOMG_MMC1,	0x10,		1,	    "W6 X1 iomg-mmc1 pin4 SDIO" },
 	{ KB_IOMG_MMC1,	0x14,		1,	    "W6 X1 iomg-mmc1 pin5 SDIO" },
+#if IS_ENABLED(CONFIG_KK_SDIO_KAPI_SDIO25)
+	/* G62-3 W8: SDIO saati PPLL0 yoluna (hiword maske; yalniz bu iki bit; bolen/PLL secimi YAZILMAZ) */
+	{ KB_CRG,	CRG_CLKDIV19,	0x01000100, "W8 S1 CLKDIV19 b8 sc_gt_clk_sdio1 PLL yolu kapisi (hiword)" },
+	{ KB_CRG,	CRG_CLKDIV6,	0x00400040, "W8 S2 CLKDIV6 b6 sdio mux -> PLL yolu (hiword)" },
+	{ KB_CRG,	CRG_CLKDIV19,	0x01000000, "W8 S1 GERI ALMA CLKDIV19 b8 <- 0 (hiword)" },
+	{ KB_CRG,	CRG_CLKDIV6,	0x00400000, "W8 S2 GERI ALMA CLKDIV6 b6 <- 0 (hiword)" },
+#endif
 };
 
 /* CRG adımları (sıra = tasarım §3.2-3: C2 -> C1 -> C4 -> C5) */
@@ -234,6 +250,12 @@ struct kk_kapi {
 	int tetik_red;			/* reddedilen tetik sayısı */
 	enum kk_p1 p1;
 	const char *sonuc;		/* durum dosyası için */
+	/* G62-3: SDIO 25 MHz CRG adimi */
+	bool s25_dt;			/* DT karakutu,sdio25-ciu-hz var */
+	u32 s25_dt_hz;
+	bool s25_aktif;			/* on kosullar tamam: adim yazacak */
+	bool s25_denendi;		/* acilis basina 1 */
+	bool s25_yazildi;		/* S1+S2 yazildi ve geri okumalari tuttu */
 	struct mutex kilit;		/* kart[] metni */
 	struct delayed_work kart_is;
 	int kart_tur, kart_ilk;
@@ -521,6 +543,153 @@ static int kk_pmic_adim(struct kk_kapi *k, const struct kk_dokum *d)
 	return -ENODEV;
 }
 
+/*
+ * G62-3: SDIO 25 MHz CRG adimi. Derlenmediyse (CONFIG_KK_SDIO_KAPI_SDIO25=n) yazma yolu yok; DT 25 MHz isterse DUR.
+ * Hedef durum (tasarim kosullari): yalniz iki bit, maske yontemiyle, acilis basina bir kez, kart saati kapaliyken:
+ *   S1 CLKDIV19 (0x0f4) b8  <- 1  (sc_gt_clk_sdio1: PLL yolu kapisi)   hiword 0x01000100
+ *   S2 CLKDIV6  (0x0c0) b6  <- 1  (mux: sys 3,2 MHz -> PLL yolu)       hiword 0x00400040
+ * CLKDIV6 [3:0] (bolen) ve [5:4] (PLL secimi) YAZILMAZ; 4.9 degerlerine (KK_SDIO25_DIV/PLL) esit olmalari on kosuldur.
+ * Sira: S1 (mux hala sys yolunda: IP'ye etkisi yok) -> S2; ikisi de clk_sdio kapisi (PEREN4 b19) ve reset (PERRSTDIS4)
+ * ACILMADAN ONCE yapilir, dwmmc2 henuz olusturulmamistir. Her yazmanin geri okumasi tam deger: onceki | maske.
+ * Tutmazsa: bu adimin yazdigi bitler ters hiword ile geri alinir (S2 sonra S1), geri okunur, DUR.
+ */
+#if IS_ENABLED(CONFIG_KK_SDIO_KAPI_SDIO25)
+/* Degiskenler (sabit ifade degil): doldurulmamis (-1) degerlerde derleyicinin "hep dogru" uyarisini onler */
+static const int s25_div = CONFIG_KK_SDIO25_DIV;
+static const int s25_pll = CONFIG_KK_SDIO25_PLL;
+static const int s25_ciu = CONFIG_KK_SDIO25_CIU_HZ;
+#define S25_DIV		s25_div
+#define S25_PLL		s25_pll
+#define S25_CIU		s25_ciu
+#define S25_C19_B8	0x0100u
+#define S25_C6_B6	0x0040u
+#define S25_C19_AC	0x01000100u
+#define S25_C19_GERI	0x01000000u
+#define S25_C6_AC	0x00400040u
+#define S25_C6_GERI	0x00400000u
+
+/* Yazmadan onceki saf denetim (yazma yok): DUR ise <0 */
+static int kk_sdio25_on(struct kk_kapi *k, const struct kk_dokum *d)
+{
+	u32 c6 = kk_crg_deger(d, CRG_CLKDIV6), c19 = kk_crg_deger(d, CRG_CLKDIV19);
+
+	k->s25_aktif = false;
+	if (!k->s25_dt) {
+		if (kk_sdio25) {
+			KU("sdio25=1 ama DT karakutu,sdio25-ciu-hz yok -> DUR (hicbir yazma yapilmadi)");
+			return -ENODEV;
+		}
+		KD("sdio25: DT 25 MHz istemiyor; adim yok (3,2 MHz yolu)");
+		return 0;
+	}
+	if (!kk_sdio25) {
+		KU("DT 25 MHz (ciu %u Hz) istiyor ama sdio25=1 yok; DT saati yanlis olurdu -> DUR (hicbir yazma yapilmadi)",
+		   k->s25_dt_hz);
+		return -ENODEV;
+	}
+	if (S25_DIV < 0 || S25_PLL < 0 || S25_CIU <= 0) {
+		KU("sdio25: 4.9 degeri DOLDURULMAMIS (DIV=%d PLL=%d CIU_HZ=%d) -> DUR (hicbir yazma yapilmadi)", S25_DIV, S25_PLL,
+		   S25_CIU);
+		return -ENODEV;
+	}
+	if (k->s25_dt_hz != (u32)S25_CIU) {
+		KU("sdio25: DT ciu %u Hz != derleme CIU_HZ %d -> DUR (hicbir yazma yapilmadi)", k->s25_dt_hz, S25_CIU);
+		return -ENODEV;
+	}
+	if (k->mmc_pdev) {
+		KU("sdio25: kart saati acik (dwmmc2 var) -> DUR (hicbir yazma yapilmadi)");
+		return -ENODEV;
+	}
+	if ((c6 & 0xf) != (u32)S25_DIV || ((c6 >> 4) & 3) != (u32)S25_PLL || (c6 & S25_C6_B6) || (c19 & S25_C19_B8) ||
+	    B(kk_crg_deger(d, CRG_PERSTAT4), 19)) {
+		KU("sdio25: ON KOSUL TUTMADI CLKDIV6=0x%04x (olmali bolen %d, PLL %d, b6=0) CLKDIV19=0x%04x (b8=0 olmali) PERSTAT4 b19=%u (0 olmali) -> DUR (hicbir yazma yapilmadi)",
+		   c6, S25_DIV, S25_PLL, c19, B(kk_crg_deger(d, CRG_PERSTAT4), 19));
+		return -ENODEV;
+	}
+	k->s25_aktif = true;
+	KD("sdio25: on kosullar tamam (CLKDIV6 bolen=%d PLL=%d b6=0, CLKDIV19 b8=0, clk_sdio kapali, dwmmc2 yok); ciu %d Hz",
+	   S25_DIV, S25_PLL, S25_CIU);
+	return 0;
+}
+
+/* Geri alma: yalniz bu adimin yazdigi bit(ler). Her zaman -ENODEV (DUR). */
+static int kk_sdio25_geri(struct kk_kapi *k, bool s2_yazildi, u32 c19_once, u32 c6_once)
+{
+	u32 g;
+
+	if (s2_yazildi) {
+		if (!kk_sdio_yaz(k, KB_CRG, CRG_CLKDIV6, S25_C6_GERI)) {
+			g = kk_oku(k, KB_CRG, CRG_CLKDIV6);
+			KU("sdio25 GERI ALMA S2: CLKDIV6 0x%04x (onceki 0x%04x) %s", g, c6_once, g == c6_once ? "ESIT" : "FARKLI");
+		}
+	}
+	if (!kk_sdio_yaz(k, KB_CRG, CRG_CLKDIV19, S25_C19_GERI)) {
+		g = kk_oku(k, KB_CRG, CRG_CLKDIV19);
+		KU("sdio25 GERI ALMA S1: CLKDIV19 0x%04x (onceki 0x%04x) %s", g, c19_once, g == c19_once ? "ESIT" : "FARKLI");
+	}
+	KU("sdio25 DUR: geri alma bitti (MMIO %d yazma); dwmmc2 olusturulmayacak", k->yazma);
+	return -ENODEV;
+}
+
+static int kk_sdio25_adim(struct kk_kapi *k)
+{
+	u32 c19, c6, g;
+
+	if (!k->s25_aktif)
+		return 0;
+	if (k->s25_denendi || k->mmc_pdev) {
+		KU("sdio25: acilis basina 1 / kart saati acik; tekrar yok -> DUR (yazma yapilmadi)");
+		return -EBUSY;
+	}
+	k->s25_denendi = true;
+	/* taze okuma: on kosullar yazmadan hemen once yeniden */
+	c19 = kk_oku(k, KB_CRG, CRG_CLKDIV19);
+	c6 = kk_oku(k, KB_CRG, CRG_CLKDIV6);
+	if ((c6 & 0xf) != (u32)S25_DIV || ((c6 >> 4) & 3) != (u32)S25_PLL || (c6 & S25_C6_B6) || (c19 & S25_C19_B8) ||
+	    !B(c19, 6) || B(kk_oku(k, KB_CRG, CRG_PERSTAT4), 19)) {
+		KU("sdio25: taze okuma on kosulu tutmadi CLKDIV6=0x%04x CLKDIV19=0x%04x -> DUR (yazma yapilmadi)", c6, c19);
+		return -ENODEV;
+	}
+	if (kk_sdio_yaz(k, KB_CRG, CRG_CLKDIV19, S25_C19_AC))
+		return -ENODEV;
+	g = kk_oku(k, KB_CRG, CRG_CLKDIV19);
+	KD("sdio25 S1 CLKDIV19 0x%04x -> 0x%04x (beklenen 0x%04x) %s", c19, g, c19 | S25_C19_B8,
+	   g == (c19 | S25_C19_B8) ? "AYNI" : "FARKLI");
+	if (g != (c19 | S25_C19_B8)) {
+		KU("sdio25 S1 geri okuma beklenen degil -> geri alma + DUR");
+		return kk_sdio25_geri(k, false, c19, c6);
+	}
+	if (kk_sdio_yaz(k, KB_CRG, CRG_CLKDIV6, S25_C6_AC))
+		return kk_sdio25_geri(k, false, c19, c6);
+	g = kk_oku(k, KB_CRG, CRG_CLKDIV6);
+	KD("sdio25 S2 CLKDIV6 0x%04x -> 0x%04x (beklenen 0x%04x) %s", c6, g, c6 | S25_C6_B6,
+	   g == (c6 | S25_C6_B6) ? "AYNI" : "FARKLI");
+	if (g != (c6 | S25_C6_B6)) {
+		KU("sdio25 S2 geri okuma beklenen degil -> geri alma + DUR");
+		return kk_sdio25_geri(k, true, c19, c6);
+	}
+	k->s25_yazildi = true;
+	KD("sdio25 tamam: SDIO ciu PPLL0 yolunda (bolen %d, PLL %d), %d Hz beklenir; kart saati henuz kapali", S25_DIV, S25_PLL,
+	   S25_CIU);
+	return 0;
+}
+#else
+static int kk_sdio25_on(struct kk_kapi *k, const struct kk_dokum *d)
+{
+	if (k->s25_dt) {
+		KU("DT 25 MHz (ciu %u Hz) istiyor ama CONFIG_KK_SDIO_KAPI_SDIO25 derlenmedi -> DUR (hicbir yazma yapilmadi)",
+		   k->s25_dt_hz);
+		return -ENODEV;
+	}
+	return 0;
+}
+
+static int kk_sdio25_adim(struct kk_kapi *k)
+{
+	return 0;
+}
+#endif
+
 static int kk_crg_adimlari(struct kk_kapi *k)
 {
 	unsigned int i;
@@ -529,6 +698,8 @@ static int kk_crg_adimlari(struct kk_kapi *k)
 		const struct kk_crg_adim *a = &kk_sdio_crg[i];
 		u32 m = BIT(a->bit), o, g;
 
+		if (i == 1 && kk_sdio25_adim(k))	/* G62-3: C2'den sonra, clk_sdio (C4) ve reset (C5) oncesi */
+			return -ENODEV;
 		o = kk_oku(k, KB_CRG, a->durum_off);
 		if (B(o, a->bit) == a->hedef) {
 			KD("%s: zaten hedefte (+0x%03x=0x%08x); yazma yok", a->ad, a->durum_off, o);
@@ -609,7 +780,12 @@ static int kk_sonra_denetle(struct kk_kapi *k, const struct kk_dokum *o, const s
 	KK_SART(B(kk_crg_deger(s, CRG_PERSTAT0), 21) == 1, "PERSTAT0 b21 != 1");
 	KK_SART(B(kk_crg_deger(s, CRG_PERSTAT4), 19) == 1, "PERSTAT4 b19 != 1");
 	KK_SART(B(kk_crg_deger(s, CRG_PERRSTSTAT4), 20) == 0, "PERRSTSTAT4 b20 != 0");
-	KK_SART(kk_crg_deger(s, CRG_CLKDIV6) == kk_crg_deger(o, CRG_CLKDIV6), "CLKDIV6 degisti");
+	if (k->s25_yazildi) {
+		KK_SART(kk_crg_deger(s, CRG_CLKDIV6) == (kk_crg_deger(o, CRG_CLKDIV6) | 0x40), "CLKDIV6 beklenen degil (b6 disinda degisti)");
+		KK_SART(B(kk_crg_deger(s, CRG_CLKDIV19), 8) == 1, "CLKDIV19 b8 != 1");
+	} else {
+		KK_SART(kk_crg_deger(s, CRG_CLKDIV6) == kk_crg_deger(o, CRG_CLKDIV6), "CLKDIV6 degisti");
+	}
 	for (i = 0; i < 6; i++) {
 		KK_SART(s->mx[i] == 1, "iomg-mmc1 +0x%02x = 0x%x", i * 4, s->mx[i]);
 		KK_SART(s->cf[i] == o->cf[i], "iocg-mmc1 +0x%02x degisti 0x%x -> 0x%x", i * 4, o->cf[i], s->cf[i]);
@@ -815,6 +991,11 @@ static void kk_dizi(struct kk_kapi *k)
 	r = kk_on_kosul(k, &once);
 	if (r)
 		goto dur;
+	r = kk_sdio25_on(k, &once);	/* G62-3: saf denetim, yazma yok */
+	if (r) {
+		k->sonuc = "DUR: sdio25 on kosulu";
+		goto dur;
+	}
 	r = kk_pmic_adim(k, &once);
 	if (r)
 		goto dur;
@@ -991,6 +1172,7 @@ static int kk_dt_al(struct kk_kapi *k)
 		KU("karakutu,mmc (hi3660-dw-mshc, reg, irq) okunamadi -> DUR (hicbir erisim yapilmadi)");
 		return -ENODEV;
 	}
+	k->s25_dt = !of_property_read_u32(np, "karakutu,sdio25-ciu-hz", &k->s25_dt_hz);
 	/* Her blok ayrı reg girdisi; bölge TALEP EDİLMEZ (CRG başka sürücülerin de). Eşleme erişim değildir. */
 	for (i = 0; i < KB_SAYI; i++) {
 		struct resource r;
@@ -1042,6 +1224,7 @@ static int kk_sdio_kapi_probe(struct platform_device *pdev)
 	kk_sdio_calisti = true;	/* buradan sonra erişim başlar; erteleme yok */
 	KD("basladi (ac=1; PMIC yazma yolu %s; MMIO izin tablosu %zu girdi); G47: acilista YALNIZ OKUMA, dizi %s/baslat tetigini bekler (acilis basina 1)",
 	   KK_PMIC_DURUM, ARRAY_SIZE(kk_sdio_izin), dev_name(k->dev));
+	KD("sdio25 yolu %s; DT 25 MHz istegi %s", KK_S25_DURUM, k->s25_dt ? "VAR" : "yok");
 	r = kk_dokum_al(k, &k->acilis, "acilis", true);
 	if (!r)
 		r = kk_on_kosul(k, &k->acilis);

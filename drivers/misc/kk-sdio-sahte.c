@@ -12,6 +12,13 @@
  *   c5   PERRSTSTAT4 güncellenmez
  *   gpio +0x3fc güncellenmez               (GPIO geri okuması tutmaz)
  *   x1   iomg-mmc1 +0x0c yazması tutmaz (0 kalır)
+ * G62-3 (CONFIG_KK_SDIO_KAPI_SDIO25; CLKDIV6 0xc0 de hiword çözülür):
+ *   s1   CLKDIV19 b8 yazması (0x01000100) tutmaz           (S1 geri okuması tutmaz -> geri alma)
+ *   s2   CLKDIV6 b6 yazması (0x00400040) tutmaz            (S2 geri okuması tutmaz -> S2+S1 geri alma)
+ *   s3   CLKDIV6 b6 yazılırken b4 (PLL seçimi) de değişir  (komşu bit; S2 geri okuması tutmaz)
+ *   s4   CLKDIV19 b8 yazılırken b9 da değişir              (komşu bit; S1 geri okuması tutmaz)
+ *   s5   geri alma yazmaları (0x01000000 / 0x00400000) tutmaz (tek başına etkisiz: yalnız geri alma yoluna girilince görünür)
+ *   s6   s2 + s5 birlikte: S2 yazması tutmaz VE geri almalar tutmaz (geri okuma FARKLI; yine DUR)
  * G46 W1 (yalnız CONFIG_KK_SDIO_KAPI_PMIC_YAZ=y QEMU çekirdeğinde) sahte PMIC hata enjeksiyonu. Bu kancalar sahte
  * PMIC RAM'ine YAZMAZ (RAM'i yalnız kapının tek regmap_write'ı değiştirir); kapının gördüğünü değiştirir:
  *   pmichata  W1 yazması (0x3e <- 0x01) RAM'e yapılır ama regmap -EIO dönmüş gibi görünür
@@ -31,7 +38,7 @@
 
 static char *bozuk = "";
 module_param(bozuk, charp, 0444);
-MODULE_PARM_DESC(bozuk, "hata enjeksiyonu: c1|c2|c4|c5|gpio|x1 (+ W1: pmichata|pmicgeri|pmic3f|pmiconce; G47: pmicokuma|pmichata0)");
+MODULE_PARM_DESC(bozuk, "hata enjeksiyonu: c1|c2|c4|c5|gpio|x1|s1..s6 (G62-3) (+ W1: pmichata|pmicgeri|pmic3f|pmiconce; G47: pmicokuma|pmichata0)");
 
 static u32 kk_once;	/* yazmadan önceki değer (CLKDIV19 / PL061 DATA) */
 
@@ -42,8 +49,8 @@ static bool kk_bozuk(const char *ad)
 
 void kk_sdio_sahte_once(void __iomem *b, unsigned int blok, u32 off)
 {
-	if (blok == KB_CRG && off == 0x0f4)
-		kk_once = readl(b + 0x0f4) & 0xffff;
+	if (blok == KB_CRG && (off == 0x0f4 || off == 0x0c0))
+		kk_once = readl(b + off) & 0xffff;
 	else if (blok == KB_GPIO3)
 		kk_once = readl(b + 0x3fc) & 0xff;
 }
@@ -74,8 +81,26 @@ void kk_sdio_sahte_yansit(void __iomem *b, unsigned int blok, u32 off, u32 val)
 		case 0x0f4:	/* CLKDIV19, hiword maske */
 			if (kk_bozuk("c2"))
 				break;
+			if (kk_bozuk("s1") && val == 0x01000100)
+				break;
+			if ((kk_bozuk("s5") || kk_bozuk("s6")) && val == 0x01000000)
+				break;
 			m = val >> 16;
-			writel(((kk_once & ~m) | (val & m)) & 0xffff, b + 0x0f4);
+			v = ((kk_once & ~m) | (val & m)) & 0xffff;
+			if (kk_bozuk("s4") && val == 0x01000100)
+				v ^= BIT(9);
+			writel(v, b + 0x0f4);
+			break;
+		case 0x0c0:	/* CLKDIV6, hiword maske (G62-3) */
+			if ((kk_bozuk("s2") || kk_bozuk("s6")) && val == 0x00400040)
+				break;
+			if ((kk_bozuk("s5") || kk_bozuk("s6")) && val == 0x00400000)
+				break;
+			m = val >> 16;
+			v = ((kk_once & ~m) | (val & m)) & 0xffff;
+			if (kk_bozuk("s3") && val == 0x00400040)
+				v ^= BIT(4);
+			writel(v, b + 0x0c0);
 			break;
 		}
 		break;

@@ -730,6 +730,41 @@ config KK_SDIO_KAPI_PMIC_YAZ
 	  reads 0x3E and stops unless it is already 0x01. W1 approved (G47);
 	  default n, only the Faz B image variant enables it.
 
+config KK_SDIO_KAPI_SDIO25
+	bool "Kara Kutu: SDIO gate may switch the SDIO clock to the PPLL0 path (approval G62-3 ONLY)"
+	depends on KK_SDIO_KAPI
+	help
+	  Kara Kutu (G62-3, Wi-Fi SDIO 25 MHz): compiles the CRG clock step
+	  into kk-sdio-kapi: CLKDIV19 b8 <- 1 (sdio1 PLL path gate), then
+	  CLKDIV6 b6 <- 1 (mux sys -> PLL path), both hiword mask writes, once
+	  per boot, only while the card clock is off (before dwmmc2 exists and
+	  before clk_sdio/PERRSTDIS4), each with a read-back; a mismatch
+	  rolls the register back (b6 then b8) and stops. The divider
+	  ([3:0]) and PLL select ([5:4]) are NEVER written; they must already
+	  hold the 4.9 values (KK_SDIO25_DIV/PLL) or the gate stops. Used
+	  only with cmdline kk_sdio_kapi.sdio25=1 AND the DT property
+	  karakutu,sdio25-ciu-hz on the sdio-kapi node. Default n. With the
+	  three values below left unfilled the step never writes (stops when
+	  the DT asks for 25 MHz).
+
+config KK_SDIO25_DIV
+	int "SDIO25: 4.9 CLKDIV6[3:0] value (-1 = not filled, no write)"
+	depends on KK_SDIO_KAPI_SDIO25
+	range -1 15
+	default -1
+
+config KK_SDIO25_PLL
+	int "SDIO25: 4.9 CLKDIV6[5:4] PLL select (-1 = not filled, no write)"
+	depends on KK_SDIO_KAPI_SDIO25
+	range -1 3
+	default -1
+
+config KK_SDIO25_CIU_HZ
+	int "SDIO25: ciu rate in Hz after the switch (0 = not filled, no write)"
+	depends on KK_SDIO_KAPI_SDIO25
+	range 0 2000000000
+	default 0
+
 config KK_SDIO_KAPI_SAHTE
 	bool "Kara Kutu: FAKE register model + RAM PMIC for the SDIO gate (QEMU only)"
 	depends on KK_SDIO_KAPI && MFD_SYSCON

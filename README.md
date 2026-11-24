@@ -19,10 +19,11 @@ Türkçe özet: Huawei P30 Lite (Kirin 710) kartını başsız (ekransız) çal�
 | Reboot mode | reboot reason through the PMIC syscon (reboot-mode) |
 | cpufreq | ported 4.9 hardware-vote mechanism |
 | cpuidle | PSCI CPU_SUSPEND via hvc; deepest state off by default and enabled from user space with a watchdog |
-| Wi-Fi (Hi1102, SDIO) | ROM loader, firmware download, station mode; associates (open / WPA2-PSK); SDIO runs at 3.2 MHz; IPv4 internet works behind an L3 filter that rejects everything else |
+| Wi-Fi (Hi1102, SDIO) | ROM loader, firmware download, station mode; associates (open / WPA2-PSK); SDIO clock on the PPLL0 path (25 MHz requested, 12.67 MHz card clock; about 2-4 MB/s over SSH); IPv4 internet works behind an L3 filter that rejects everything else |
 | zram | works (swap on RAM only) |
 | Display / DSS, GPU, audio, modem, camera, Bluetooth | not working (not ported) |
 | poweroff / halt | not available: the SoC hangs after "Power down" and the watchdog resets it; use reboot |
+| Panic | `panic=10`: reboots 10 s after a panic |
 
 ## Safety model
 

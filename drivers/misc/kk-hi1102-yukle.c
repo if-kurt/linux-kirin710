@@ -1240,6 +1240,24 @@ static noinline int kk_h_a10(struct kk_h *h)
 #endif
 #endif
 
+/*
+ * A0 saat kümesi (G62-3b). k.saat = mmc->ios.clock = mmc çekirdeğinin İSTEDİĞİ saat (core.c mmc_set_clock:
+ * min(CIS max_dtr, f_max); dw_mmc*.c ios->clock'a geri yazmaz; fiili kart saati dw_mmc CLKDIV'inden ayrıdır).
+ * 400 000 (kart tanıma), 3 200 000 (G62-2 DT f_max). Yalnız SDIO 25 MHz derlemesinde 25 000 000 (DT f_max = 25 MHz;
+ * fiili kart saati 12,672 MHz). Başka değer -> DUR.
+ */
+#define KK_H_A0_SAAT_SDIO25	25000000u
+static bool kk_h_a0_saat_ok(u32 saat)
+{
+	if (saat == 400000 || saat == 3200000)
+		return true;
+#if IS_ENABLED(CONFIG_KK_SDIO_KAPI_SDIO25)
+	if (saat == KK_H_A0_SAAT_SDIO25)
+		return true;
+#endif
+	return false;
+}
+
 /* A0: ön koşullar (SDIO erişimi YOK) */
 static int kk_h_a0(struct kk_h *h)
 {
@@ -1280,8 +1298,9 @@ static int kk_h_a0(struct kk_h *h)
 	else if (k.surucu)
 		neden = "fn1'e surucu bagli";
 #endif
-	else if ((k.saat != 400000 && k.saat != 3200000) || k.genislik_bit != 4)	/* G62: 3,2 MHz (ciu, bolucu 0) da kabul */
-		neden = "ios 400000/3200000 Hz 4 bit degil";
+	else if (!kk_h_a0_saat_ok(k.saat) || k.genislik_bit != 4)	/* G62: 3,2 MHz; G62-3b: sdio25'te 25 MHz istegi */
+		neden = IS_ENABLED(CONFIG_KK_SDIO_KAPI_SDIO25) ? "ios 400000/3200000/25000000 Hz 4 bit degil" :
+			"ios 400000/3200000 Hz 4 bit degil";
 	else if (k.filtre_reddi)
 		neden = "G44 filtre reddi 0 degil";
 	if (neden) {

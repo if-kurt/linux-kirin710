@@ -19,6 +19,8 @@ int kk_m3b_tx_kapi(unsigned int main_type, unsigned int sub_type, unsigned int e
 void kk_m3b_cali_kayit(unsigned int idx, unsigned int netbuf_len, unsigned int kopya, unsigned int ofs, int son);
 void kk_m3b_cali_dus(const char *neden, unsigned int idx, unsigned int netbuf_len);
 void kk_m3b_koruma(const char *ad);
+/* G61-4: SDIO FIFO aktarim sayaci (rw 0 okuma/rx, 1 yazma/tx); yalniz sayar */
+void kk_m3b_sdio_say(int rw, unsigned int bayt, unsigned int paket);
 #ifdef CONFIG_KK_HI1102_M3C
 /* G57 M3c (platform/kk_m3c.c): ortak durum, veri (L3) süzgeci, sayaçlar. Adresler hiçbir satırda basılmaz. */
 enum { KK_M3C_S_VERI_IZIN, KK_M3C_S_VERI_RED, KK_M3C_S_EAPOL, KK_M3C_S_DHCP, KK_M3C_S_ARP, KK_M3C_S_ICMP,

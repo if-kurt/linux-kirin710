@@ -422,6 +422,10 @@ oal_int32 oal_sdio_rw_buf(struct oal_sdio *hi_sdio, oal_int32 rw,
     }
 
     sdio_release_host(func);
+#ifdef CONFIG_KK_HI1102_M3B
+    if (!ret)
+        kk_m3b_sdio_say(rw == SDIO_WRITE, rw_sz, 1);	/* G61-4: yalniz sayac (hiz sysfs) */
+#endif
 
     return ret;
 }
@@ -2240,6 +2244,10 @@ oal_int32 oal_sdio_transfer_netbuf_list(struct oal_sdio *hi_sdio,
                         HISDIO_REG_FUNC1_FIFO, sg,
                         idx,request_sg_len,
                         sum_len);
+#ifdef CONFIG_KK_HI1102_M3B
+    if (!ret)
+        kk_m3b_sdio_say(rw == SDIO_WRITE, sum_len, idx);	/* G61-4: yalniz sayac (hiz sysfs) */
+#endif
     if(sg_realloc)
     {
         sg_free_table(&sgtable);

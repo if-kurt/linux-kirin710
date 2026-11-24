@@ -23,6 +23,7 @@
 #include <linux/workqueue.h>
 #include <linux/mmc/sdio_func.h>
 #include <linux/mmc/host.h>
+#include <linux/mmc/card.h>
 #include "oal_sdio.h"
 #include "oal_sdio_comm.h"
 #include "oal_sdio_host_if.h"
@@ -32,6 +33,7 @@
 #include "oal_hcc_host_if.h"
 #include "plat_cali.h"
 #include "kk_m3b_kapi.h"
+#include "kk_m3b_log.h"
 netdev_tx_t kk_m3b_xmit_dusur(struct sk_buff *skb, struct net_device *dev);
 
 extern int ini_cfg_init(void);
@@ -63,6 +65,27 @@ atomic_t kk_m3b_isr_tur = ATOMIC_INIT(0), kk_m3b_isr_hata = ATOMIC_INIT(0), kk_m
 /* G56 M3b-2: cali (D2H CALI_TO_HMAC) ve koruma sayaçları */
 static atomic_t kk_cali_paket = ATOMIC_INIT(0), kk_cali_bayt = ATOMIC_INIT(0), kk_cali_tamam = ATOMIC_INIT(0);
 static atomic_t kk_cali_dusen = ATOMIC_INIT(0), kk_koruma_n = ATOMIC_INIT(0);
+/* G61-4: log hiz siniri (kk_m3b_log.h) ve hiz sayaclari (sysfs hiz). Sayaclar yalniz say; kmsg'ye paket basina satir basmaz. */
+atomic_t kk_log_bast_top = ATOMIC_INIT(0);
+static struct kk_log_s kk_log_m3c_tx[KK_LOG_SLOT], kk_log_tx[KK_LOG_SLOT], kk_log_xmit, kk_log_cali, kk_log_cali_dus;
+static atomic64_t kk_hiz_rx_bayt = ATOMIC64_INIT(0), kk_hiz_tx_bayt = ATOMIC64_INIT(0);
+static atomic_t kk_hiz_rx_paket = ATOMIC_INIT(0), kk_hiz_tx_paket = ATOMIC_INIT(0);
+static atomic_t kk_hiz_rx_akt = ATOMIC_INIT(0), kk_hiz_tx_akt = ATOMIC_INIT(0);
+static unsigned long kk_hiz_bas_j;	/* ilk sayim anı (hiz sysfs: up_sn) */
+
+/* oal_sdio_host.c: SDIO FIFO aktarimi bitti (rw: 0 okuma/rx, 1 yazma/tx; yalniz basarili aktarim). Yalniz sayac. */
+void kk_m3b_sdio_say(int rw, unsigned int bayt, unsigned int paket)
+{
+	if (rw) {
+		atomic64_add(bayt, &kk_hiz_tx_bayt);
+		atomic_add(paket, &kk_hiz_tx_paket);
+		atomic_inc(&kk_hiz_tx_akt);
+	} else {
+		atomic64_add(bayt, &kk_hiz_rx_bayt);
+		atomic_add(paket, &kk_hiz_rx_paket);
+		atomic_inc(&kk_hiz_rx_akt);
+	}
+}
 
 int kk_m3b_durdu(void)
 {
@@ -95,19 +118,21 @@ void kk_m3b_dur(const char *neden)
 void kk_m3b_cali_kayit(unsigned int idx, unsigned int netbuf_len, unsigned int kopya, unsigned int ofs, int son)
 {
 	int n = atomic_inc_return(&kk_cali_paket);
-	int t = atomic_add_return(kopya, &kk_cali_bayt);
+	int t = atomic_add_return(kopya, &kk_cali_bayt), bast;
 
 	if (son)
 		atomic_inc(&kk_cali_tamam);
-	pr_info("kk: m3b: cali paketi #%d: idx %u, netbuf %u B, kopya %u B @%u, son %d; toplam %d/%u B\n", n, idx, netbuf_len,
-		kopya, ofs, son, t, (unsigned int)OAL_WIFI_CALI_DATA_UPLOAD_LEN);
+	if (kk_log_izin(&kk_log_cali, KK_LOG_ILK, KK_LOG_ARALIK_S, &bast))
+		pr_info("kk: m3b: cali paketi #%d: idx %u, netbuf %u B, kopya %u B @%u, son %d; toplam %d/%u B (+%d satir bastirildi)\n", n, idx,
+			netbuf_len, kopya, ofs, son, t, (unsigned int)OAL_WIFI_CALI_DATA_UPLOAD_LEN, bast);
 }
 
 void kk_m3b_cali_dus(const char *neden, unsigned int idx, unsigned int netbuf_len)
 {
-	int n = atomic_inc_return(&kk_cali_dusen);
+	int n = atomic_inc_return(&kk_cali_dusen), bast;
 
-	pr_err("kk: m3b: cali olayi DUSURULDU #%d (%s): idx %u, netbuf %u B\n", n, neden, idx, netbuf_len);
+	if (kk_log_izin(&kk_log_cali_dus, KK_LOG_ILK, KK_LOG_ARALIK_S, &bast))
+		pr_err("kk: m3b: cali olayi DUSURULDU #%d (%s): idx %u, netbuf %u B (+%d satir bastirildi)\n", n, neden, idx, netbuf_len, bast);
 }
 
 /* Init'i M3b'de atlanmış (4.9 plat init / GPIO / BFGX) bir yola girildi: sayaç + kayıt; DUR iş kuyruğundan (atomik bağlam olabilir). */
@@ -128,11 +153,11 @@ void kk_m3b_koruma(const char *ad)
 /* ndo_start_xmit yerine: hiçbir çerçeve tele inmez (M3b'de bağlanma yok); sayılır ve düşürülür. */
 netdev_tx_t kk_m3b_xmit_dusur(struct sk_buff *skb, struct net_device *dev)
 {
-	int n = atomic_inc_return(&kk_m3b_xmit_dusen);
+	int n = atomic_inc_return(&kk_m3b_xmit_dusen), bast;
 
-	if (n <= 3 || !(n % 100))
-		pr_info("kk: m3b: xmit DUSURULDU #%d (%s, %u B, proto 0x%04x); tele inmez\n", n, dev ? dev->name : "-",
-			skb ? skb->len : 0, skb ? ntohs(skb->protocol) : 0);
+	if (kk_log_izin(&kk_log_xmit, 3, KK_LOG_ARALIK_S, &bast))
+		pr_info("kk: m3b: xmit DUSURULDU #%d (%s, %u B, proto 0x%04x); tele inmez (+%d satir bastirildi)\n", n, dev ? dev->name : "-",
+			skb ? skb->len : 0, skb ? ntohs(skb->protocol) : 0, bast);
 	if (skb)
 		dev_kfree_skb_any(skb);
 	return NETDEV_TX_OK;
@@ -186,7 +211,7 @@ static void kk_m3c_sinif_say(const char *sinif)
 int kk_m3b_tx_kapi(unsigned int main_type, unsigned int sub_type, unsigned int ext_len, const void *pay, unsigned int pay_len)
 {
 	const char *neden = NULL;
-	int n;
+	int n, bast;
 
 	if (kk_m3b_durdu()) {
 		atomic_inc(&kk_m3b_tx_red);
@@ -205,16 +230,22 @@ int kk_m3b_tx_kapi(unsigned int main_type, unsigned int sub_type, unsigned int e
 			atomic_inc(&kk_m3b_tx_izin);
 			kk_m3c_sinif_say(sinif);
 #ifdef CONFIG_KK_HI1102_M3C_QEMU
+			/* G61-4: sinif basina ilk KK_LOG_ILK satir, sonra dakikada en cok 1 (ozet: bastirilan sayisi); sayac kk_m3c_sayac'ta */
+			if (!kk_log_izin(kk_log_slot(kk_log_m3c_tx, kk_log_hash(sinif)), KK_LOG_ILK, KK_LOG_ARALIK_S, &bast))
+				return 0;
 			if (!gizli) {
-				pr_info("kk: m3c: HCC tx M3c #%d: %s; frw %u/%u ext %u len %u: %*phN\n", n, sinif,
-					pay_len > 1 ? b[0] : 0, pay_len > 1 ? b[1] : 0, ext_len, pay_len,
+				pr_info("kk: m3c: HCC tx M3c #%d: %s; frw %u/%u ext %u len %u (+%d satir bastirildi): %*phN\n", n, sinif,
+					pay_len > 1 ? b[0] : 0, pay_len > 1 ? b[1] : 0, ext_len, pay_len, bast,
 					(int)min(pay_len, 160u), pay);
 				return 0;
 			}
+#else
+			if (!kk_log_izin(kk_log_slot(kk_log_m3c_tx, kk_log_hash(sinif)), KK_LOG_ILK, KK_LOG_ARALIK_S, &bast))
+				return 0;
 #endif
 			/* cihaz: M3c turlerinin yuku basilmaz (SSID / BSSID / anahtar / IP) */
-			pr_info("kk: m3c: HCC tx M3c #%d: %s; frw %u/%u ext %u len %u (yuk basilmaz)\n", n, sinif,
-				pay_len > 1 ? b[0] : 0, pay_len > 1 ? b[1] : 0, ext_len, pay_len);
+			pr_info("kk: m3c: HCC tx M3c #%d: %s; frw %u/%u ext %u len %u (yuk basilmaz; +%d satir bastirildi)\n", n, sinif,
+				pay_len > 1 ? b[0] : 0, pay_len > 1 ? b[1] : 0, ext_len, pay_len, bast);
 			return 0;
 		}
 		if (kk_m3c_kayit) {
@@ -245,9 +276,38 @@ int kk_m3b_tx_kapi(unsigned int main_type, unsigned int sub_type, unsigned int e
 		return -EPERM;
 	}
 	n = atomic_inc_return(&kk_m3b_tx_izin);
-	pr_info("kk: m3b: HCC tx #%d: frw %u/%u cfg %u len %u: %*phN\n", n, pay_len > 1 ? ((const u8 *)pay)[0] : 0, pay_len > 1 ? ((const u8 *)pay)[1] : 0, (pay_len > 4 && ((const u8 *)pay)[0] == 1 && ((const u8 *)pay)[1] == 2) ? (((const u8 *)pay)[3] | ((const u8 *)pay)[4] << 8) : 0xffff, pay_len,
+	if (!kk_log_izin(kk_log_slot(kk_log_tx, pay_len > 1 ? ((const u8 *)pay)[0] * 31u + ((const u8 *)pay)[1] : 0), KK_LOG_ILK, KK_LOG_ARALIK_S, &bast))
+		return 0;
+	pr_info("kk: m3b: HCC tx #%d (+%d satir bastirildi): frw %u/%u cfg %u len %u: %*phN\n", n, bast, pay_len > 1 ? ((const u8 *)pay)[0] : 0, pay_len > 1 ? ((const u8 *)pay)[1] : 0, (pay_len > 4 && ((const u8 *)pay)[0] == 1 && ((const u8 *)pay)[1] == 2) ? (((const u8 *)pay)[3] | ((const u8 *)pay)[4] << 8) : 0xffff, pay_len,
 		(int)min(pay_len, 48u), pay);
 	return 0;
+}
+
+/* G61-4: SDIO saat/mod (yalniz okuma; host->ios). bit: 1 / 4 / 8 */
+static void kk_ios_oku(unsigned int *hz, unsigned int *bit, unsigned int *timing)
+{
+	const struct mmc_host *h = (kk_fn && kk_fn->card) ? kk_fn->card->host : NULL;
+
+	*hz = h ? h->ios.clock : 0;
+	*bit = h ? (h->ios.bus_width == MMC_BUS_WIDTH_8 ? 8 : h->ios.bus_width == MMC_BUS_WIDTH_4 ? 4 : 1) : 0;
+	*timing = h ? h->ios.timing : 0;
+}
+
+/* 60 sn'de bir, yalniz aktarim olduysa tek satir ozet (paket basina satir YOK). Onceki degerler yerel. */
+struct kk_hiz_ozet { u64 rx_b, tx_b; int rx_p, tx_p, tur; unsigned long j; };
+static void kk_hiz_ozet_bas(struct kk_hiz_ozet *o)
+{
+	u64 rb = atomic64_read(&kk_hiz_rx_bayt), tb = atomic64_read(&kk_hiz_tx_bayt);
+	int rp = atomic_read(&kk_hiz_rx_paket), tp = atomic_read(&kk_hiz_tx_paket), tur = atomic_read(&kk_m3b_isr_tur);
+	unsigned int hz, bit, tm;
+
+	o->j = jiffies;
+	if (rb != o->rx_b || tb != o->tx_b) {
+		kk_ios_oku(&hz, &bit, &tm);
+		pr_info("kk: m3b: hiz 60sn: rx %llu B/%d pkt, tx %llu B/%d pkt, yoklama %d tur, ios %u %u (toplam rx %llu B tx %llu B; bastirilan log %d)\n",
+			rb - o->rx_b, rp - o->rx_p, tb - o->tx_b, tp - o->tx_p, tur - o->tur, hz, bit, rb, tb, atomic_read(&kk_log_bast_top));
+	}
+	o->rx_b = rb; o->tx_b = tb; o->rx_p = rp; o->tx_p = tp; o->tur = tur;
 }
 
 /* K3: port'un oal_sdio_do_isr'ı GPIO/sdio irq yerine yoklamayla (A10 ile aynı aralık); 4.9 oal_gpio_rxdata_thread deseni. */
@@ -256,6 +316,7 @@ static int kk_yokla(void *v)
 	struct oal_sdio *s = oal_get_sdio_default_handler();
 	unsigned long son = jiffies;
 	int ret, once = 0;
+	struct kk_hiz_ozet oz = { .j = jiffies };
 
 	pr_info("kk: m3b: yoklama basladi (%d ms; 1 sn iletisiz -> %d ms); kesme kaydi YOK\n", KK_M3B_YOKLAMA_MS, KK_M3B_BOS_MS);
 	while (!kthread_should_stop() && !kk_m3b_durdu()) {
@@ -278,6 +339,8 @@ static int kk_yokla(void *v)
 				son = jiffies;
 			}
 		}
+		if (time_after(jiffies, oz.j + KK_LOG_ARALIK_S * HZ))
+			kk_hiz_ozet_bas(&oz);
 		if (time_after(jiffies, son + HZ))
 			msleep(KK_M3B_BOS_MS);
 		else
@@ -299,6 +362,14 @@ static int kk_bas(void *v)
 	pr_info("kk: m3b: baslatma: fn%u (%s); K1 tek guc acilisi, K3 tek surucu + yoklama, HCC tx beyaz listesi\n",
 		kk_fn->num, sdio_func_id(kk_fn));
 	kk_m3b_fn_ver(kk_fn);
+	{
+		unsigned int hz, bit, tm;
+
+		kk_ios_oku(&hz, &bit, &tm);
+		kk_hiz_bas_j = jiffies;
+		pr_info("kk: m3b: sdio ios %u %u (saat Hz, veri hatti bit; timing %u; yoklama %d/%d ms degismez)\n", hz, bit, tm,
+			KK_M3B_YOKLAMA_MS, KK_M3B_BOS_MS);
+	}
 	KK_ADIM("ini_cfg_init (gomulu INI)", ini_cfg_init());
 	/* gomulu derlemede bellek havuzu plat_sysfs_init'te kurulur (plat_main.c:367); o cagrilmadigi icin burada */
 	KK_ADIM("oal_mem_init_pool", (int)oal_mem_init_pool());
@@ -436,6 +507,18 @@ static ssize_t durum_show(struct kobject *k, struct kobj_attribute *a, char *b)
 		atomic_read(&kk_m3b_isr_tur), atomic_read(&kk_m3b_isr_hata), atomic_read(&kk_cali_paket), atomic_read(&kk_cali_bayt),
 		atomic_read(&kk_cali_tamam), atomic_read(&kk_cali_dusen), atomic_read(&kk_koruma_n));
 }
+static ssize_t hiz_show(struct kobject *k, struct kobj_attribute *a, char *b)
+{
+	unsigned int hz, bit, tm;
+
+	kk_ios_oku(&hz, &bit, &tm);
+	return sysfs_emit(b, "rx_bayt=%llu rx_paket=%d rx_aktarim=%d tx_bayt=%llu tx_paket=%d tx_aktarim=%d yoklama_tur=%d yoklama_hata=%d ios_hz=%u ios_bit=%u ios_timing=%u yoklama_ms=%d/%d log_bastirilan=%d up_sn=%u\n",
+		(unsigned long long)atomic64_read(&kk_hiz_rx_bayt), atomic_read(&kk_hiz_rx_paket), atomic_read(&kk_hiz_rx_akt),
+		(unsigned long long)atomic64_read(&kk_hiz_tx_bayt), atomic_read(&kk_hiz_tx_paket), atomic_read(&kk_hiz_tx_akt),
+		atomic_read(&kk_m3b_isr_tur), atomic_read(&kk_m3b_isr_hata), hz, bit, tm, KK_M3B_YOKLAMA_MS, KK_M3B_BOS_MS,
+		atomic_read(&kk_log_bast_top), kk_hiz_bas_j ? jiffies_to_msecs(jiffies - kk_hiz_bas_j) / 1000 : 0);
+}
+static struct kobj_attribute kk_hiz_attr = __ATTR_RO(hiz);
 #ifdef CONFIG_KK_HI1102_M3C
 extern atomic_t kk_m3c_baglan_istek, kk_m3c_baglan_red, kk_m3c_ayril_istek;
 static ssize_t m3c_durum_show(struct kobject *k, struct kobj_attribute *a, char *b)
@@ -459,6 +542,8 @@ static int __init kk_m3b_sysfs(void)
 
 	if (!k || sysfs_create_file(k, &kk_durum_attr.attr))
 		pr_warn("kk: m3b: sysfs yok\n");
+	if (k && sysfs_create_file(k, &kk_hiz_attr.attr))
+		pr_warn("kk: m3b: hiz sysfs yok\n");
 #ifdef CONFIG_KK_HI1102_M3C
 	if (k && sysfs_create_file(k, &kk_m3c_durum_attr.attr))
 		pr_warn("kk: m3c: sysfs yok\n");

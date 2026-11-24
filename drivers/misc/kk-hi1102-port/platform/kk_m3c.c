@@ -29,6 +29,7 @@
 #include <linux/moduleparam.h>
 #include <linux/tcp.h>
 #include "kk_m3b_kapi.h"
+#include "kk_m3b_log.h"
 
 static u8 kk_kendi[ETH_ALEN], kk_bssid[ETH_ALEN];
 static bool kk_kendi_var, kk_bssid_var;
@@ -36,6 +37,7 @@ static struct net_device *kk_dev;
 static DEFINE_SPINLOCK(kk_m3c_kilit);
 
 atomic_t kk_m3c_sayac[KK_M3C_S_SAYI];
+static struct kk_log_s kk_log_veri[KK_LOG_SLOT];	/* G61-4: veri DUSURULDU log hiz siniri (red turu basina) */
 static const char *const kk_m3c_sayac_ad[KK_M3C_S_SAYI] = {
 	[KK_M3C_S_VERI_IZIN] = "veri_izin", [KK_M3C_S_VERI_RED] = "veri_red", [KK_M3C_S_EAPOL] = "eapol",
 	[KK_M3C_S_DHCP] = "dhcp", [KK_M3C_S_ARP] = "arp", [KK_M3C_S_ICMP] = "icmp",
@@ -285,7 +287,7 @@ int kk_m3c_veri_suz(struct sk_buff *skb, struct net_device *dev)
 {
 	const struct ethhdr *e;
 	const char *neden;
-	int s, n, red = -1;
+	int s, n, red = -1, bast;
 
 	if (kk_m3b_durdu()) {
 		neden = "DUR";
@@ -306,9 +308,10 @@ int kk_m3c_veri_suz(struct sk_buff *skb, struct net_device *dev)
 	}
 	n = atomic_inc_return(&kk_m3c_sayac[KK_M3C_S_VERI_RED]);
 	kk_m3c_say(red);
-	if (n <= 10 || !(n % 100))
-		pr_info("kk: m3c: veri DUSURULDU #%d: %s (%u B, ethertype 0x%04x); tele inmez\n", n, neden, skb ? skb->len : 0,
-			(skb && skb->len >= ETH_HLEN) ? ntohs(((const struct ethhdr *)skb->data)->h_proto) : 0);
+	/* G61-4: red turu basina ilk 10 satir, sonra dakikada en cok 1 (ozet); turune gore sayac m3c_durum'da */
+	if (kk_log_izin(kk_log_slot(kk_log_veri, red < 0 ? 0 : red), 10, KK_LOG_ARALIK_S, &bast))
+		pr_info("kk: m3c: veri DUSURULDU #%d: %s (%u B, ethertype 0x%04x); tele inmez (+%d satir bastirildi)\n", n, neden, skb ? skb->len : 0,
+			(skb && skb->len >= ETH_HLEN) ? ntohs(((const struct ethhdr *)skb->data)->h_proto) : 0, bast);
 	if (skb)
 		dev_kfree_skb_any(skb);
 	return 1;

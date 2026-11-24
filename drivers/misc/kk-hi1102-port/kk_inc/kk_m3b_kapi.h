@@ -24,7 +24,11 @@ void kk_m3b_koruma(const char *ad);
 enum { KK_M3C_S_VERI_IZIN, KK_M3C_S_VERI_RED, KK_M3C_S_EAPOL, KK_M3C_S_DHCP, KK_M3C_S_ARP, KK_M3C_S_ICMP,
        KK_M3C_S_AUTH, KK_M3C_S_ASSOC, KK_M3C_S_DEAUTH, KK_M3C_S_DISASSOC, KK_M3C_S_BA, KK_M3C_S_ANAHTAR,
        KK_M3C_S_ANAHTAR_SIL, KK_M3C_S_VARSAYILAN, KK_M3C_S_ANAHTAR_RED, KK_M3C_S_PS_KURULMADI, KK_M3C_S_HATA_AYIKLAMA,
-       KK_M3C_S_MAC_MASKE, KK_M3C_S_TCP, KK_M3C_S_UDP, KK_M3C_S_SAYI };
+       KK_M3C_S_MAC_MASKE, KK_M3C_S_TCP, KK_M3C_S_UDP,
+       /* G60-2: veri RED turleri (xmit suzgeci; toplami veri_red'e esit) */
+       KK_M3C_S_RED_DUR, KK_M3C_S_RED_KISA, KK_M3C_S_RED_MAC, KK_M3C_S_RED_ETHERTYPE, KK_M3C_S_RED_IPV6, KK_M3C_S_RED_BASLIK,
+       KK_M3C_S_RED_PARCA, KK_M3C_S_RED_PROTOKOL, KK_M3C_S_RED_UDP, KK_M3C_S_RED_ICMP, KK_M3C_S_RED_HEDEF, KK_M3C_S_RED_KAYNAK,
+       KK_M3C_S_SAYI };
 void kk_m3c_say(int i);
 int kk_m3c_sayac_yaz(char *b, int boy);
 void kk_m3c_kendi_mac(struct net_device *dev, const unsigned char *mac);

@@ -817,6 +817,108 @@ static void kk_m3c_dhcp(u8 vap, const u8 *sa, const u8 *ip, unsigned int n)
 	SK("M3c: D2H DHCP %s (yiaddr 192.168.1.77/24, yonlendirici/DNS 192.168.1.1, kira 600 sn, %s) kuyrukta",
 	   tip == 1 ? "OFFER" : "ACK", yayin ? "yayin" : "tek noktali");
 }
+/* G60-2 L3_GENIS (YALNIZ QEMU): sahte ag gecidi her IPv4 unicast hedefe yanit verir (yonlendirici gibi).
+   UDP: dport 53 -> sahte DNS (A = 192.0.2.80; AAAA/diger = bos NOERROR), baska UDP (67 haric) -> yanki. TCP: durumsuz minimal sunucu
+   (SYN -> SYN|ACK; ilk veri -> "KK-TCP-YANIT\n" + FIN; FIN -> ACK). ICMP echo her hedefe (asagida). */
+static int kk_m3c_udp_n, kk_m3c_tcp_n;
+static u16 kk_tcp_cks(const u8 *src, const u8 *dst, const u8 *t, unsigned int tl)
+{
+	u8 b[12 + 64];
+
+	if (tl > 64)
+		return 0;
+	memcpy(b, src, 4); memcpy(b + 4, dst, 4);
+	b[8] = 0; b[9] = 6; b[10] = tl >> 8; b[11] = tl & 0xff;
+	memcpy(b + 12, t, tl);
+	return kk_ip_sag(b, 12 + tl);
+}
+static void kk_m3c_udp(u8 vap, const u8 *sa, const u8 *l3, unsigned int ln)
+{
+	const u8 *u = l3 + 20, *q;
+	unsigned int tl = min_t(unsigned int, get_unaligned_be16(l3 + 2), ln), dport = get_unaligned_be16(u + 2), pl, qe, rl;
+	u8 *y;
+
+	if (l3[0] != 0x45 || tl < 28)
+		return;
+	pl = tl - 28;
+	kk_m3c_udp_n++;
+	if (kk_m3c_udp_n <= 5 || !(kk_m3c_udp_n % 50))
+		SK("M3c: H2D UDP #%d %u.%u.%u.%u:%u -> %u.%u.%u.%u:%u (%u B)", kk_m3c_udp_n, l3[12], l3[13], l3[14], l3[15],
+		   get_unaligned_be16(u), l3[16], l3[17], l3[18], l3[19], dport, pl);
+	if (dport == 53) {
+		q = u + 8;
+		if (pl < 17)
+			return;
+		for (qe = 12; qe < pl && q[qe]; qe += q[qe] + 1)
+			;
+		qe += 5;	/* sifir bayti + qtype + qclass */
+		if (qe > pl || qe + 16 > 400)
+			return;
+		rl = qe + (get_unaligned_be16(q + qe - 4) == 1 ? 16 : 0);
+		y = kk_vy_al(vap, sa, kk_gw_mac, 0x0800, 28 + rl);
+		if (!y)
+			return;
+		kk_ip_baslik(y, 28 + rl, 17, l3 + 16, l3 + 12);
+		memcpy(y + 20, u + 2, 2); memcpy(y + 22, u, 2);
+		put_unaligned_be16(8 + rl, y + 24);
+		memcpy(y + 28, q, qe);
+		y[30] = 0x81; y[31] = 0x80; y[32] = 0; y[33] = 1; y[34] = 0; y[35] = rl > qe ? 1 : 0;	/* QR RD RA, qd 1, an 0/1 */
+		y[36] = y[37] = y[38] = y[39] = 0;	/* ns/ar 0 (EDNS OPT atilir) */
+		if (rl > qe) {
+			u8 *a = y + 28 + qe;
+
+			a[0] = 0xc0; a[1] = 0x0c; a[3] = 1; a[5] = 1; a[9] = 60; a[11] = 4;
+			a[12] = 192; a[13] = 0; a[14] = 2; a[15] = 80;
+		}
+		SK("M3c: D2H DNS yaniti (%s) kuyrukta", rl > qe ? "A 192.0.2.80" : "bos");
+		return;
+	}
+	if (dport == 67 || pl > 400)
+		return;
+	y = kk_vy_al(vap, sa, kk_gw_mac, 0x0800, tl);
+	if (!y)
+		return;
+	kk_ip_baslik(y, tl, 17, l3 + 16, l3 + 12);
+	memcpy(y + 20, u + 2, 2); memcpy(y + 22, u, 2);
+	put_unaligned_be16(8 + pl, y + 24);
+	memcpy(y + 28, u + 8, pl);
+}
+static void kk_m3c_tcp(u8 vap, const u8 *sa, const u8 *l3, unsigned int ln)
+{
+	static const u8 yan[] = "KK-TCP-YANIT\n";
+	const u8 *t = l3 + 20;
+	unsigned int tl = min_t(unsigned int, get_unaligned_be16(l3 + 2), ln), off = (t[12] >> 4) * 4, pl, yl = 0;
+	u32 seq = get_unaligned_be32(t + 4), ack = get_unaligned_be32(t + 8), s2, a2;
+	u8 fl = t[13], f2, *y;
+
+	if (l3[0] != 0x45 || tl < 40 || off < 20 || tl < 20 + off)
+		return;
+	pl = tl - 20 - off;
+	kk_m3c_tcp_n++;
+	if (kk_m3c_tcp_n <= 8 || !(kk_m3c_tcp_n % 50))
+		SK("M3c: H2D TCP #%d %u.%u.%u.%u:%u -> %u.%u.%u.%u:%u bayrak 0x%02x (%u B)", kk_m3c_tcp_n, l3[12], l3[13], l3[14], l3[15],
+		   get_unaligned_be16(t), l3[16], l3[17], l3[18], l3[19], get_unaligned_be16(t + 2), fl, pl);
+	if (fl & 4)
+		return;
+	if ((fl & 2) && !(fl & 0x10)) {
+		f2 = 0x12; s2 = 0x4b4b0000; a2 = seq + 1;
+	} else if (fl & 1) {
+		f2 = 0x10; s2 = ack; a2 = seq + pl + 1;
+	} else if (pl) {
+		f2 = 0x19; s2 = ack; a2 = seq + pl; yl = sizeof(yan) - 1;
+	} else {
+		return;
+	}
+	y = kk_vy_al(vap, sa, kk_gw_mac, 0x0800, 40 + yl);
+	if (!y)
+		return;
+	kk_ip_baslik(y, 40 + yl, 6, l3 + 16, l3 + 12);
+	memcpy(y + 20, t + 2, 2); memcpy(y + 22, t, 2);
+	put_unaligned_be32(s2, y + 24); put_unaligned_be32(a2, y + 28);
+	y[32] = 0x50; y[33] = f2; y[34] = 0x16; y[35] = 0xd0;	/* ofset 5, pencere 5840 */
+	memcpy(y + 40, yan, yl);
+	put_unaligned_be16(kk_tcp_cks(l3 + 16, l3 + 12, y + 20, 20 + yl), y + 36);
+}
 static void kk_m3c_h2d_veri(const u8 *b, unsigned int n)
 {
 	const u8 *g = b + 64, *l3 = b + 72, *sa = b + 38;
@@ -852,7 +954,7 @@ static void kk_m3c_h2d_veri(const u8 *b, unsigned int n)
 		kk_m3c_icmp_n++;
 		SK("M3c: H2D ICMP #%d echo istegi %u.%u.%u.%u -> %u.%u.%u.%u (%u B)", kk_m3c_icmp_n, l3[12], l3[13], l3[14], l3[15],
 		   l3[16], l3[17], l3[18], l3[19], tl);
-		if (memcmp(l3 + 16, kk_gw_ip, 4) || tl < 28)
+		if (tl < 28)	/* G60-2: her hedefe yanit (sahte ag gecidi yonlendirici gibi); G59'da yalniz 192.168.1.1 */
 			return;
 		y = kk_vy_al(vap, sa, kk_gw_mac, 0x0800, tl);
 		if (!y)
@@ -864,6 +966,10 @@ static void kk_m3c_h2d_veri(const u8 *b, unsigned int n)
 		y[20] = 0; y[22] = y[23] = 0;
 		put_unaligned_be16(kk_ip_sag(y + 20, tl - 20), y + 22);
 		SK("M3c: D2H ICMP echo yaniti kuyrukta");
+	} else if (et == 0x0800 && ln >= 28 && l3[9] == 17) {
+		kk_m3c_udp(vap, sa, l3, ln);
+	} else if (et == 0x0800 && ln >= 40 && l3[9] == 6) {
+		kk_m3c_tcp(vap, sa, l3, ln);
 	} else if (et == 0x888e) {
 		kk_m3c_eapol_n++;
 		SK("M3c: H2D EAPOL #%d (%u B)", kk_m3c_eapol_n, ln);

@@ -9,6 +9,8 @@
  *    IPv4 UDP 68 -> 67 (DHCP istemcisi) ve ICMP echo isteği (hedef wlan0 alt ağında). Başka her çerçeve DÜŞER
  *    (tele inmez, sayılır; yük basılmaz). HCC kapısında liste dışı = RED + DUR (son savunma hattı).
  *  - IPv6 çekirdekte yok (CONFIG_IPV6 kapalı); çok noktalı IP / IGMP yok.
+ *  - G60-2: kk_m3c_l3_genis=1 (Kconfig L3_GENIS açıkken) IPv4 unicast TCP/UDP/ICMP her hedefe geçer; RED'ler türüne göre sayılır
+ *    (m3c_durum red_*; toplamı veri_red).
  */
 #include <linux/kernel.h>
 #include <linux/atomic.h>
@@ -43,6 +45,10 @@ static const char *const kk_m3c_sayac_ad[KK_M3C_S_SAYI] = {
 	[KK_M3C_S_PS_KURULMADI] = "ps_zamanlayici_kurulmadi", [KK_M3C_S_HATA_AYIKLAMA] = "hata_ayiklama_gonderilmedi",
 	[KK_M3C_S_MAC_MASKE] = "oam_mac_maskeli",
 	[KK_M3C_S_TCP] = "tcp", [KK_M3C_S_UDP] = "udp",
+	[KK_M3C_S_RED_DUR] = "red_dur", [KK_M3C_S_RED_KISA] = "red_kisa", [KK_M3C_S_RED_MAC] = "red_mac",
+	[KK_M3C_S_RED_ETHERTYPE] = "red_ethertype", [KK_M3C_S_RED_IPV6] = "red_ipv6", [KK_M3C_S_RED_BASLIK] = "red_baslik",
+	[KK_M3C_S_RED_PARCA] = "red_parca", [KK_M3C_S_RED_PROTOKOL] = "red_protokol", [KK_M3C_S_RED_UDP] = "red_udp",
+	[KK_M3C_S_RED_ICMP] = "red_icmp", [KK_M3C_S_RED_HEDEF] = "red_hedef", [KK_M3C_S_RED_KAYNAK] = "red_kaynak",
 };
 
 void kk_m3c_say(int i)
@@ -160,13 +166,17 @@ static bool kk_adres_bu(__be32 d, bool yayin)
 }
 
 /* genis kip: NULL = izin. Kaynak = wlan0'in kendi IPv4'u; hedef unicast (coklu nokta / yayin / sifir ag / loopback degil) */
-static const char *kk_genis_unicast(const struct iphdr *ip)
+static const char *kk_genis_unicast(const struct iphdr *ip, int *red)
 {
-	if (ipv4_is_multicast(ip->daddr) || ipv4_is_lbcast(ip->daddr) || ipv4_is_zeronet(ip->daddr) || ipv4_is_loopback(ip->daddr) ||
-	    kk_adres_bu(ip->daddr, true))
+	if (ipv4_is_multicast(ip->daddr) || ipv4_is_lbcast(ip->daddr) || (ip->daddr & htonl(0xff000000)) == 0 || ipv4_is_loopback(ip->daddr) ||
+	    kk_adres_bu(ip->daddr, true)) {
+		*red = KK_M3C_S_RED_HEDEF;
 		return "IPv4 hedef unicast degil (genis kip)";
-	if (!kk_adres_bu(ip->saddr, false))
+	}
+	if (!kk_adres_bu(ip->saddr, false)) {
+		*red = KK_M3C_S_RED_KAYNAK;
 		return "IPv4 kaynak wlan0 adresi degil (genis kip)";
+	}
 	return NULL;
 }
 #else
@@ -177,46 +187,55 @@ static const char *kk_genis_unicast(const struct iphdr *ip)
  * L3 beyaz listesi. tur = ethertype (konak düzeni), l3 = ethertype'tan sonraki ilk bayt, n = kalan boy, src = 802.3 kaynak MAC.
  * NULL = izin (*sinif sayaç indeksi), değilse neden.
  */
-const char *kk_m3c_l3_izinli(unsigned int tur, const unsigned char *l3, unsigned int n, const unsigned char *src, int *sinif)
+/* G60-2: RED turu (*red = KK_M3C_S_RED_*) tek yerden atanir; izin verilince *red = -1. */
+static const char *kk_l3_karar(unsigned int tur, const unsigned char *l3, unsigned int n, const unsigned char *src, int *sinif, int *red)
 {
 	const struct iphdr *ip;
 	unsigned int ihl;
 
 	*sinif = -1;
-	if (src && (!kk_kendi_var || !ether_addr_equal(src, kk_kendi)))
+	*red = -1;
+	if (src && (!kk_kendi_var || !ether_addr_equal(src, kk_kendi))) {
+		*red = KK_M3C_S_RED_MAC;
 		return "kaynak MAC kendi MAC degil";
+	}
 	switch (tur) {
 	case ETH_P_PAE:
 		*sinif = KK_M3C_S_EAPOL;
-		return n >= 4 ? NULL : "EAPOL kisa";
+		if (n < 4) { *red = KK_M3C_S_RED_KISA; return "EAPOL kisa"; }
+		return NULL;
 	case ETH_P_ARP:
 		*sinif = KK_M3C_S_ARP;
-		if (n < 28) return "ARP kisa";
+		if (n < 28) { *red = KK_M3C_S_RED_KISA; return "ARP kisa"; }
+		*red = KK_M3C_S_RED_BASLIK;
 		if (l3[0] != 0 || l3[1] != 1 || l3[2] != 0x08 || l3[3] != 0x00 || l3[4] != 6 || l3[5] != 4) return "ARP Ethernet/IPv4 degil";
 		if (l3[6] != 0 || (l3[7] != 1 && l3[7] != 2)) return "ARP islem 1/2 degil";
+		*red = KK_M3C_S_RED_MAC;
 		if (!kk_kendi_var || !ether_addr_equal(l3 + 8, kk_kendi)) return "ARP gonderen MAC kendi degil";
+		*red = -1;
 		return NULL;
 	case ETH_P_IP:
-		if (n < sizeof(struct iphdr)) return "IPv4 kisa";
+		if (n < sizeof(struct iphdr)) { *red = KK_M3C_S_RED_KISA; return "IPv4 kisa"; }
 		ip = (const struct iphdr *)l3;
 		ihl = ip->ihl * 4;
-		if (ip->version != 4 || ihl < 20 || n < ihl) return "IPv4 baslik";
-		if (ip->frag_off & htons(IP_MF | IP_OFFSET)) return "IPv4 parca";
+		if (ip->version != 4 || ihl < 20 || n < ihl) { *red = KK_M3C_S_RED_BASLIK; return "IPv4 baslik"; }
+		if (ip->frag_off & htons(IP_MF | IP_OFFSET)) { *red = KK_M3C_S_RED_PARCA; return "IPv4 parca"; }
 		if (ip->protocol == IPPROTO_UDP) {
 			const struct udphdr *u = (const void *)(l3 + ihl);
 
 			*sinif = KK_M3C_S_DHCP;
-			if (n < ihl + 8) return "UDP kisa";
+			if (n < ihl + 8) { *red = KK_M3C_S_RED_KISA; return "UDP kisa"; }
 			if (u->source == htons(68) && u->dest == htons(67))
 				return NULL;
 #ifdef CONFIG_KK_HI1102_M3C_L3_GENIS
 			if (kk_m3c_l3_genis) {
-				const char *g = kk_genis_unicast(ip);
+				const char *g = kk_genis_unicast(ip, red);
 
 				if (!g) *sinif = KK_M3C_S_UDP;
 				return g;
 			}
 #endif
+			*red = KK_M3C_S_RED_UDP;
 			return "UDP 68->67 (DHCP istemcisi) degil";
 		}
 #ifdef CONFIG_KK_HI1102_M3C_L3_GENIS
@@ -224,8 +243,8 @@ const char *kk_m3c_l3_izinli(unsigned int tur, const unsigned char *l3, unsigned
 			const char *g;
 
 			*sinif = KK_M3C_S_TCP;
-			if (n < ihl + sizeof(struct tcphdr)) return "TCP kisa";
-			g = kk_genis_unicast(ip);
+			if (n < ihl + sizeof(struct tcphdr)) { *red = KK_M3C_S_RED_KISA; return "TCP kisa"; }
+			g = kk_genis_unicast(ip, red);
 			if (g) return g;
 			return NULL;
 		}
@@ -234,19 +253,31 @@ const char *kk_m3c_l3_izinli(unsigned int tur, const unsigned char *l3, unsigned
 			const struct icmphdr *c = (const void *)(l3 + ihl);
 
 			*sinif = KK_M3C_S_ICMP;
-			if (n < ihl + 8) return "ICMP kisa";
+			if (n < ihl + 8) { *red = KK_M3C_S_RED_KISA; return "ICMP kisa"; }
+#ifdef CONFIG_KK_HI1102_M3C_L3_GENIS
+			/* genis kip: unicast her hedef (alt ag yayin adresi dahil DEGIL: echo -> alt ag yayini RED_HEDEF) */
+			if (kk_m3c_l3_genis)
+				return kk_genis_unicast(ip, red);
+#endif
 			if (c->type == ICMP_ECHO && c->code == 0 && kk_alt_agda(ip->daddr))
 				return NULL;
-#ifdef CONFIG_KK_HI1102_M3C_L3_GENIS
-			if (kk_m3c_l3_genis)
-				return kk_genis_unicast(ip);
-#endif
+			*red = KK_M3C_S_RED_ICMP;
 			if (c->type != ICMP_ECHO || c->code != 0) return "ICMP echo istegi degil";
 			return "ICMP hedefi wlan0 alt aginda degil";
 		}
+		*red = KK_M3C_S_RED_PROTOKOL;
 		return kk_m3c_l3_genis ? "IPv4 protokol (UDP / TCP / ICMP disi)" : "IPv4 protokol (UDP-DHCP / ICMP disi)";
 	}
+	*red = tur == 0x86DD ? KK_M3C_S_RED_IPV6 : KK_M3C_S_RED_ETHERTYPE;
 	return "ethertype (EAPOL/ARP/IPv4 disi)";
+}
+
+/* HCC kapisi (kk_m3b_tx_liste.h) icin eski imza */
+const char *kk_m3c_l3_izinli(unsigned int tur, const unsigned char *l3, unsigned int n, const unsigned char *src, int *sinif)
+{
+	int red;
+
+	return kk_l3_karar(tur, l3, n, src, sinif, &red);
 }
 
 /* ndo_start_xmit önü: 0 = ilet; 1 = düştü (skb serbest) */
@@ -254,17 +285,19 @@ int kk_m3c_veri_suz(struct sk_buff *skb, struct net_device *dev)
 {
 	const struct ethhdr *e;
 	const char *neden;
-	int s, n;
+	int s, n, red = -1;
 
 	if (kk_m3b_durdu()) {
 		neden = "DUR";
 		s = -1;
+		red = KK_M3C_S_RED_DUR;
 	} else if (!skb || skb->len < ETH_HLEN || skb_linearize(skb)) {
 		neden = "kisa / dogrusal degil";
 		s = -1;
+		red = KK_M3C_S_RED_KISA;
 	} else {
 		e = (const struct ethhdr *)skb->data;
-		neden = kk_m3c_l3_izinli(ntohs(e->h_proto), skb->data + ETH_HLEN, skb->len - ETH_HLEN, e->h_source, &s);
+		neden = kk_l3_karar(ntohs(e->h_proto), skb->data + ETH_HLEN, skb->len - ETH_HLEN, e->h_source, &s, &red);
 	}
 	if (!neden) {
 		atomic_inc(&kk_m3c_sayac[KK_M3C_S_VERI_IZIN]);
@@ -272,6 +305,7 @@ int kk_m3c_veri_suz(struct sk_buff *skb, struct net_device *dev)
 		return 0;
 	}
 	n = atomic_inc_return(&kk_m3c_sayac[KK_M3C_S_VERI_RED]);
+	kk_m3c_say(red);
 	if (n <= 10 || !(n % 100))
 		pr_info("kk: m3c: veri DUSURULDU #%d: %s (%u B, ethertype 0x%04x); tele inmez\n", n, neden, skb ? skb->len : 0,
 			(skb && skb->len >= ETH_HLEN) ? ntohs(((const struct ethhdr *)skb->data)->h_proto) : 0);

@@ -30,8 +30,8 @@
 		ranges;
 		stdout-path = "serial6:115200n8";
 		/* G28: kamerasız test; kanıt pstore. ignore_loglevel: her seviye console-ramoops'a da gider (watchdog
-		 * reset'iyle biten takılmada dmesg dökümü olmaz, tam log console kaydında kalır). panic=0: panikte bekle. */
-		bootargs = "earlycon=pl011,mmio32,0xfff32000 console=ttyAMA6,115200 console=tty0 ignore_loglevel consoleblank=0 fbcon=font:TER16x32 panic=0 printk.devkmsg=on clk_ignore_unused fsck.mode=skip systemd.gpt_auto=0 kk_debian_sinir=720";
+		 * reset'iyle biten takılmada dmesg dökümü olmaz, tam log console kaydında kalır). panic=10: panikte 10 sn sonra yeniden başlat (G63). */
+		bootargs = "earlycon=pl011,mmio32,0xfff32000 console=ttyAMA6,115200 console=tty0 ignore_loglevel consoleblank=0 fbcon=font:TER16x32 panic=10 printk.devkmsg=on clk_ignore_unused fsck.mode=skip systemd.gpt_auto=0 kk_debian_sinir=720";
 
 		/* Bootloader'ın açık bıraktığı panel tamponu (hisi_fb: g_logo_buffer_base=0x18c00000;
 		 * fb0: 1080x2312, 32 bpp, stride 4320). Kanal sırası doğrulanmadı (a8r8g8b8/a8b8g8r8). */

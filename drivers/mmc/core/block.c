@@ -196,6 +196,14 @@ struct mmc_blk_data {
 	/* Kara Kutu (G53 A12): bdev yazma girişi kapısı; türe göre red sayaçları (KK_A12_*) ve son red nedeni */
 	atomic_t	kk_a12_red[KK_A12_TUR_SAYI];
 	const char	*kk_a12_son;
+	/* Kara Kutu (G59 E7): tüm-bölüm kipi ve çekirdek kaçak yazma bekçisi (jeton kovası; kk_kacak_adim) */
+	bool		kk_yaz_tum;
+	spinlock_t	kk_kacak_kilit;
+	u64		kk_kacak_seviye;	/* sektör x 3600 */
+	u64		kk_kacak_son_s;		/* son dolum anı (boottime sn) */
+	bool		kk_kacak_ilk;
+	u64		kk_kacak_toplam;	/* kovadan geçen yazma sektörü (bilgi) */
+	bool		kk_kacak_tetik;
 #endif
 };
 
@@ -289,7 +297,16 @@ struct kk_beklenen {
 	u64 pen_bas, pen_boy;		/* "karakutu,yazma-araligi" (core.c ile aynı özellik) */
 	u64 kart_sektor;		/* "karakutu,kart-sektor" */
 	u64 pen_azami;			/* G49: "karakutu,yazma-azami" (isteğe bağlı; 0 = yok -> KK_EMMC_PENCERE_SEKTOR) */
+	bool tum;			/* G59 E7: "karakutu,yazma-tum-bolum": pencere = userdata bölümünün TAMAMI */
 };
+
+/*
+ * G59 E7: tüm-bölüm kipi. Pencere 1 GiB sınırı yerine hedef bölümün tamamıdır; ama yalnız GPT'de adı "userdata"
+ * ve numarası 68 olan bölüm için. DT pencere = DT bölüm aralığı = GPT bölümü (üçü birebir aynı) değilse kapı kapalı kalır.
+ * Başka hiçbir bölüm için bu kip yoktur.
+ */
+#define KK_TUM_AD	"userdata"
+#define KK_TUM_NO	68u
 
 /*
  * Pencere doğrulaması (açılışta bir kez; NULL = hazır). Hepsi şart:
@@ -316,7 +333,15 @@ static const char *kk_blk_pencere_dogrula(const struct kk_bolum *b, int n, const
 		return "DT azami gecersiz";
 	if ((pb % KK_EMMC_PENCERE_HIZA) || (e->pen_boy % KK_EMMC_PENCERE_HIZA))
 		return "hiza8";
-	if (e->pen_boy != (e->pen_azami ? e->pen_azami : KK_EMMC_PENCERE_SEKTOR))
+	if (e->tum) {
+		/* G59 E7: pencere = bölümün tamamı ("userdata", 68); azami ile birlikte kullanılamaz */
+		if (e->pen_azami)
+			return "tum-bolum azami ile";
+		if (strcmp(e->ad, KK_TUM_AD) || e->no != KK_TUM_NO)
+			return "tum-bolum yalniz userdata/68";
+		if (pb != bb || e->pen_boy != e->bolum_boy)
+			return "tum-bolum: pencere bolumun tamami degil";
+	} else if (e->pen_boy != (e->pen_azami ? e->pen_azami : KK_EMMC_PENCERE_SEKTOR))
 		return "uzunluk";
 	if (pb < 34)
 		return "pencere GPT alaninda";
@@ -377,6 +402,51 @@ static int kk_blk_ac_karar(bool md_kilit, bool host_kilit, bool hazir, bool kati
 	return 0;
 }
 /* KK-G46-BIRIM-SON */
+
+/* KK-G59-E7-BIRIM-BASLA: bu işaretler arası saf C; birim testi (work/g59/e7/birim) aynen derler */
+/*
+ * G59 E7: çekirdek kaçak yazma bekçisi (jeton kovası; son çare). Hız kovasının (G58, kk-alan) yerine: tüm userdata
+ * penceresine inen YAZMA sektörleri (blok katmanı kapısından geçenler) sayılır.
+ *   seviye birimi: sektör x 3600 (hız sektör/saat; saniyede hiz birim dolar)
+ *   tavan = patlama x 3600; ilk çağrıda kova DOLU
+ *   istek bedeli say x 3600; seviye bedeli karşılamıyorsa KAÇAK (true): istek ücretlenmez, çağıran kapıyı kapatır.
+ * Çekirdek değerleri (KK_KACAK_*) kullanıcı alanı bekçisinden (kk-yazma-bekci: 1 GiB/sa, 8 GiB) BİLEREK gevşektir:
+ * kullanıcı alanı önce zarifçe (remount,ro) devreye girer; çekirdek yalnız onun yetişemediği ya da çalışmadığı durumda keser.
+ * Saat geri giderse (simdi < son_s) dolum yok, son_s değişmez; tavana yetecek süreden (tavan / hiz sn) uzun beklemede kova dolar.
+ */
+#define KK_KACAK_HIZ		3145728ull	/* sektör/saat = 1,5 GiB/sa */
+#ifdef CONFIG_KK_EMMC_YAZMA_SINAMA
+#define KK_KACAK_PATLAMA	1048576ull	/* YALNIZ QEMU sınaması (CONFIG_KK_EMMC_YAZMA_SINAMA; cihaz imajında kapalı): 512 MiB */
+#else
+#define KK_KACAK_PATLAMA	25165824ull	/* sektör = 12 GiB */
+#endif
+#define KK_KACAK_BIRIM		3600ull
+
+static bool kk_kacak_adim(u64 *seviye, u64 *son_s, bool *ilk, u64 simdi, u64 say, u64 hiz, u64 patlama)
+{
+	u64 tavan = patlama * KK_KACAK_BIRIM, dt;
+
+	if (!*ilk) {
+		*ilk = true;
+		*seviye = tavan;
+		*son_s = simdi;
+	}
+	if (simdi > *son_s) {
+		dt = simdi - *son_s;
+		if (!hiz)
+			;			/* dolum yok */
+		else if (dt > tavan / hiz)	/* tavana yetecek süre geçti (ve hiz * dt taşmaz) */
+			*seviye = tavan;
+		else
+			*seviye = min(tavan, *seviye + hiz * dt);
+		*son_s = simdi;
+	}
+	if (say > patlama || say * KK_KACAK_BIRIM > *seviye)
+		return true;
+	*seviye -= say * KK_KACAK_BIRIM;
+	return false;
+}
+/* KK-G59-E7-BIRIM-SON */
 
 /* KK-G53-A12-BIRIM-BASLA: bu işaretler arası saf C; birim testi (work/g53/a12/birim) aynen derler */
 /*
@@ -517,6 +587,38 @@ static int kk_blk_bdev_kapi(struct block_device *bdev, u64 pos, u64 say, unsigne
 }
 
 /* G53 A12: kapıyı kurar ve açılışta TEK satır yazar (pencere tanımlı ana alan diskinde, doğrulama sonucundan sonra) */
+/*
+ * G59 E7: kaçak yazma bekçisi (çekirdek, son çare). Yalnız tüm-bölüm kipinde, blok katmanı kapısından geçen
+ * YAZMA istekleri için. true = kaçak: kapı bu açılışta kalıcı kapanır (kk_yazma "kapat" ile aynı bayraklar; uyumaz).
+ * Geri dönüş yalnız reboot (kapı açılış başına bir kez açılır).
+ */
+static bool kk_blk_kacak(struct mmc_blk_data *md, u64 say)
+{
+	struct mmc_host *host = md->queue.card->host;
+	unsigned long fl;
+	bool k;
+
+	if (!md->kk_yaz_tum)
+		return false;
+	spin_lock_irqsave(&md->kk_kacak_kilit, fl);
+	k = md->kk_kacak_tetik ||
+	    kk_kacak_adim(&md->kk_kacak_seviye, &md->kk_kacak_son_s, &md->kk_kacak_ilk,
+			  ktime_get_boottime_seconds(), say, KK_KACAK_HIZ, KK_KACAK_PATLAMA);
+	if (k && !md->kk_kacak_tetik) {
+		md->kk_kacak_tetik = true;
+		WRITE_ONCE(host->kk_yaz_kilit, true);
+		WRITE_ONCE(host->kk_yaz_acik, false);
+		WRITE_ONCE(md->kk_yaz_kilit, true);
+		WRITE_ONCE(md->kk_yaz_acik, false);
+		pr_warn("%s: kk: KACAK YAZMA: kova bosaldi (hiz %llu sektor/sa, patlama %llu); pencere KAPALI, kilitli (reboot ile doner)\n",
+			md->disk->disk_name, KK_KACAK_HIZ, KK_KACAK_PATLAMA);
+	} else if (!k) {
+		md->kk_kacak_toplam += say;
+	}
+	spin_unlock_irqrestore(&md->kk_kacak_kilit, fl);
+	return k;
+}
+
 static void kk_blk_a12_kur(struct mmc_blk_data *md)
 {
 	WRITE_ONCE(md->disk->kk_yaz_kapi, kk_blk_bdev_kapi);
@@ -537,6 +639,7 @@ static void kk_blk_pencere_hazirla(struct mmc_card *card, struct mmc_blk_data *m
 	u8 *ext_csd = NULL;
 	int n = 0;
 
+	spin_lock_init(&md->kk_kacak_kilit);
 	md->kk_yaz_neden = "pencere yok";
 	/* QEMU sınama derlemesinde SD kart katı olmayan modda başlar (kk_kati=1 sonradan); pencere yine yalnız
 	 * katıyken açılır ve işler (kk_blk_yazma_ac, kk_mmc_neden_kati). Cihaz derlemesinde katılık şart. */
@@ -558,6 +661,7 @@ static void kk_blk_pencere_hazirla(struct mmc_card *card, struct mmc_blk_data *m
 		goto log;
 	e.pen_bas = v[0];
 	e.pen_boy = v[1];
+	e.tum = device_property_read_bool(dt, "karakutu,yazma-tum-bolum");	/* G59 E7 */
 	/* G49: isteğe bağlı azami uzunluk; özellik varsa ama okunamıyorsa (biçim/boy) DT eksik sayılır */
 	if (device_property_present(dt, "karakutu,yazma-azami")) {
 		if (device_property_read_u32(dt, "karakutu,yazma-azami", &no) || !no)
@@ -604,8 +708,10 @@ static void kk_blk_pencere_hazirla(struct mmc_card *card, struct mmc_blk_data *m
 	kfree(b);
 	if (!md->kk_yaz_neden) {
 		md->kk_yaz_hazir = true;
-		pr_warn("%s: kk: yazma penceresi HAZIR (kapali) [%llu, %llu) bolum=%s no=%u\n",
-			md->disk->disk_name, md->kk_yaz_bas, md->kk_yaz_son, e.ad, e.no);
+		md->kk_yaz_tum = e.tum;
+		pr_warn("%s: kk: yazma penceresi HAZIR (kapali) [%llu, %llu) bolum=%s no=%u kip=%s\n",
+			md->disk->disk_name, md->kk_yaz_bas, md->kk_yaz_son, e.ad, e.no,
+			e.tum ? "tum-bolum" : "pencere");
 		kk_blk_a12_kur(md);	/* G53 A12 */
 		return;
 	}
@@ -809,6 +915,24 @@ static ssize_t kk_yazma_store(struct device *dev, struct device_attribute *attr,
 
 static DEVICE_ATTR(kk_yazma, 0600, kk_yazma_show, kk_yazma_store);
 
+/* G59 E7: /sys/block/mmcblkN/kk_kacak (0444; yalnız okur, yan etkisiz): kip, tetik, kova seviyesi (sektör), toplam */
+static ssize_t kk_kacak_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct mmc_blk_data *md = mmc_blk_get(dev_to_disk(dev));
+	unsigned long fl;
+	ssize_t ret;
+
+	spin_lock_irqsave(&md->kk_kacak_kilit, fl);
+	ret = sysfs_emit(buf, "kip=%s tetik=%d seviye=%llu hiz=%llu patlama=%llu toplam=%llu\n",
+			 md->kk_yaz_tum ? "tum-bolum" : "pencere", md->kk_kacak_tetik,
+			 md->kk_kacak_ilk ? md->kk_kacak_seviye / KK_KACAK_BIRIM : KK_KACAK_PATLAMA,
+			 KK_KACAK_HIZ, KK_KACAK_PATLAMA, md->kk_kacak_toplam);
+	spin_unlock_irqrestore(&md->kk_kacak_kilit, fl);
+	mmc_blk_put(md);
+	return ret;
+}
+static DEVICE_ATTR(kk_kacak, 0444, kk_kacak_show, NULL);
+
 /* Kara Kutu (G53 A12): /sys/block/mmcblkN/kk_a12 (0444; kk_yazma ile aynı görünürlük). Yalnız okur, yan etkisiz. */
 static ssize_t kk_a12_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -832,6 +956,7 @@ static struct attribute *mmc_disk_attrs[] = {
 	&dev_attr_ro_lock_until_next_power_on.attr,
 #ifdef CONFIG_KK_EMMC_YAZMA
 	&dev_attr_kk_yazma.attr,
+	&dev_attr_kk_kacak.attr,
 	&dev_attr_kk_a12.attr,
 #endif
 	NULL,
@@ -854,7 +979,7 @@ static umode_t mmc_disk_attrs_is_visible(struct kobject *kobj,
 	}
 #ifdef CONFIG_KK_EMMC_YAZMA
 	/* G46: pencere tanımsızsa (DT özelliği yok) sysfs bugünküyle aynı: kk_yazma hiç görünmez */
-	if ((a == &dev_attr_kk_yazma.attr || a == &dev_attr_kk_a12.attr) &&	/* G53: kk_a12 aynı kuralla */
+	if ((a == &dev_attr_kk_yazma.attr || a == &dev_attr_kk_a12.attr || a == &dev_attr_kk_kacak.attr) &&	/* G53: kk_a12 aynı kuralla */
 	    (!md->queue.card->host->kk_yaz_son || md->area_type != MMC_BLK_DATA_AREA_MAIN))
 		mode = 0;
 #endif
@@ -2960,6 +3085,8 @@ enum mmc_issued mmc_blk_mq_issue_rq(struct mmc_queue *mq, struct request *req)
 		};
 		const char *neden = kk_blk_istek_neden(&p, req_op(req), blk_rq_pos(req), blk_rq_sectors(req));
 
+		if (!neden && req_op(req) == REQ_OP_WRITE && kk_blk_kacak(md, blk_rq_sectors(req)))
+			neden = "kacak yazma";
 		if (neden) {
 			pr_warn_ratelimited("%s: kk: blok yazma reddedildi: op=%u pos=%llu say=%u (%s)\n",
 					    md->disk->disk_name, req_op(req), (u64)blk_rq_pos(req),

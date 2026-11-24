@@ -9,4 +9,5 @@ dtb-$(CONFIG_ARCH_HISI) += hip07-d05.dtb
 dtb-$(CONFIG_ARCH_HISI) += kirin710-huawei-marie.dtb
 dtb-$(CONFIG_ARCH_HISI) += kirin710-huawei-marie-p1.dtb
 dtb-$(CONFIG_ARCH_HISI) += kirin710-huawei-marie-birlesik.dtb
+dtb-$(CONFIG_ARCH_HISI) += kirin710-huawei-marie-birlesik-sdio25.dtb
 dtb-$(CONFIG_ARCH_HISI) += kirin710-huawei-marie-m1.dtb

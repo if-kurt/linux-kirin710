@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Kara Kutu G62-3: Wi-Fi SDIO 25 MHz DT varyanti. Taban: kirin710-huawei-marie-birlesik.dts (3,2 MHz yolu, 400 kHz kart).
+ * Yalniz bu uc fark:
+ *  1) sdio_ciu = 202 752 000 Hz (PPLL0/8; 4.9 SDR12 satirinin ciu degeri). Kapi CRG adimini (CLKDIV19 b8 + CLKDIV6 b6)
+ *     yazarsa fiili saat budur. fixed-factor sarmali: dw_mmc-k3 set_ios clk_set_rate(ios->clock * 8) cagirir; fixed-clock
+ *     bunu -EINVAL ile reddeder, fixed-factor (carpan 1, bolen 1) saati degistirmeden kabul eder.
+ *  2) dwmmc2 max-frequency 25 MHz. HS/UHS/SDR yok (cap-sd-highspeed, sd-uhs-*, mmc-hs* YOK): CCCR yuksek hiz biti
+ *     yazilmaz, CMD11/CMD19 yok, 1,8 V yok. dw_mmc CLKDIV: bus_hz = 202,752/8 = 25,344 MHz; 25 MHz istegi -> CLKDIV=1 ->
+ *     fiili kart saati 12,672 MHz (en cok 25 MHz); 400 kHz istegi -> CLKDIV=32 -> 396 kHz.
+ *  3) sdio-kapi karakutu,sdio25-ciu-hz: kapi bu degeri CONFIG_KK_SDIO25_CIU_HZ ile karsilastirir ve bos/uyumsuzsa
+ *     yazmadan DUR der (DT saati ile gercek saat ayrilamaz). Kullanim: kernel cmdline kk_sdio_kapi.sdio25=1 gerekir.
+ */
+#include "kirin710-huawei-marie-birlesik.dts"
+
+/ {
+	clocks {
+		sdio_ciu_ham: clk-sdio-ciu-ham {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <202752000>;
+			clock-output-names = "kk_sdio_ciu_ham";
+		};
+	};
+};
+
+&sdio_ciu {
+	/delete-property/ clock-frequency;
+	compatible = "fixed-factor-clock";
+	clocks = <&sdio_ciu_ham>;
+	clock-mult = <1>;
+	clock-div = <1>;
+};
+
+&dwmmc2 {
+	max-frequency = <25000000>;
+};
+
+&{/soc/sdio-kapi} {
+	karakutu,sdio25-ciu-hz = <202752000>;
+};

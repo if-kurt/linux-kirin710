@@ -12,6 +12,7 @@ extern "C" {
 #include "oal_hcc_host_if.h"
 #include "oal_profiling.h"
 #include "oam_ext_if.h"
+#include "kk_m3b_log.h"
 
 #ifdef CONFIG_MMC
 #include "plat_pm_wlan.h"
@@ -1762,8 +1763,15 @@ oal_void   hcc_host_set_flowctl_param(oal_uint8 uc_queue_type, oal_uint16 us_bur
     hcc_tc->hcc_transer_info.hcc_queues[HCC_TX].queues[uc_queue_type].flow_ctrl.low_waterline = us_low_waterline;
     hcc_tc->hcc_transer_info.hcc_queues[HCC_TX].queues[uc_queue_type].flow_ctrl.high_waterline = us_high_waterline;
 
-    OAL_IO_PRINT("hcc_host_set_flowctl_param, queue[%d]: burst limit = %d, low_waterline = %d, high_waterline =%d\r\n",
-                    uc_queue_type, us_burst_limit, us_low_waterline, us_high_waterline);
+    {
+        /* G62-2: akis denetimi parametre satiri hiz sinirli (ilk 3, sonra 60 sn'de 1) */
+        static struct kk_log_s kk_hcc_fc_s;
+        int bast;
+
+        if (kk_log_izin(&kk_hcc_fc_s, 3, KK_LOG_ARALIK_S, &bast))
+            OAL_IO_PRINT("hcc_host_set_flowctl_param, queue[%d]: burst limit = %d, low_waterline = %d, high_waterline =%d (bastirilan %d)\r\n",
+                            uc_queue_type, us_burst_limit, us_low_waterline, us_high_waterline, bast);
+    }
     return;
 }
 

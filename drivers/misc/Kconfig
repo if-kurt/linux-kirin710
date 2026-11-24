@@ -813,6 +813,15 @@ config KK_HI1102_M3B
 	  (no probe request, connect, mgmt tx, AP, P2P). Requires
 	  KK_HI1102_PORT and KK_HI1102_M3A (#error otherwise).
 
+config KK_HI1102_INI
+	string "Path of the Hi1102 cfg INI file (outside the repository) embedded at build time"
+	depends on KK_HI1102_M3B
+	default ""
+	help
+	  Kara Kutu (G62-2): the INI (cfg_marie_lx1a_hisi.ini) is not kept in the
+	  tree; kk_ini_uret.py turns it into kk_ini_gomulu.h in the build
+	  directory. The build fails when the path is empty.
+
 config KK_HI1102_YUKLE_SAHTE
 	bool "Kara Kutu: FAKE Hi1102 ROM model for the loader (QEMU only)"
 	depends on KK_HI1102_YUKLE && KK_SDIO_KAPI_SAHTE

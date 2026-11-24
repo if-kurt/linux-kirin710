@@ -11,6 +11,7 @@ extern "C" {
 *****************************************************************************/
 #include "oam_main.h"
 #include "oam_log.h"
+#include "kk_m3b_log.h"
 #ifdef CONFIG_PRINTK
 #include <linux/kernel.h>
 #endif
@@ -88,6 +89,18 @@ oal_int32 OAL_PRINT2KERNEL(
     if(OAM_LOG_LEVEL_ERROR == clog_level)
     {
         DECLARE_DFT_TRACE_KEY_INFO("oam error log", OAL_DFT_TRACE_OTHER);
+    }
+    {
+        /* G62-2: kmsg hiz siniri, (dosya, satir) basina: ilk 3 (ERROR 20) her zaman, sonra 60 sn'de 1 (ozet: bastirilan sayisi).
+         * Bastirilan satirlar kk_log_bast_top'ta sayilir. Sinirlama yalniz kmsg'yi etkiler; DFT izi (ERROR) once alinir; cihaz kaydi degismez. */
+        static struct kk_log_s kk_oam_log_s[64];
+        int bast;
+        struct kk_log_s *s = &kk_oam_log_s[(us_file_no * 31u + us_line_no) % ARRAY_SIZE(kk_oam_log_s)];
+
+        if (!kk_log_izin(s, OAM_LOG_LEVEL_ERROR == clog_level ? 20 : 3, KK_LOG_ARALIK_S, &bast))
+            return OAL_SUCC;
+        if (bast)
+            printk(KERN_DEBUG "[oam] F:%d L:%d: %d satir bastirildi\n", us_file_no, us_line_no, bast);
     }
 
     l_ret = snprintf(pc_buf,OAM_LOG_PRINT_DATA_LENGTH, KERN_DEBUG"[%s][vap:%d]%s [F:%d][L:%d]\n",

@@ -39,7 +39,7 @@
 		 * status="disabled": of_platform OLUŞTURMAZ; aygıtı yalnız kk-sdio-kapi, bütün geri okumalar tuttuktan
 		 * sonra oluşturur. resets/pinctrl/vmmc/vqmmc/mmc-pwrseq/hisilicon,peripheral-syscon YOK (M1).
 		 * karakutu,sdio-yalniz + no-sd + no-mmc + non-removable (no-sdio yok): mmc filtresi "SDIO-yalnız"
-		 * kipi (G44 filtre yaması; yalnız CMD0/3/5/7/52/53). 400 kHz; HS/UHS yok. */
+		 * kipi (G44 filtre yaması; yalnız CMD0/3/5/7/52/53). Kart tanıma 400 kHz, sonra 3,2 MHz (G62-2); HS/UHS yok. */
 		dwmmc2: mmc@fc183000 {
 			compatible = "hisilicon,hi3660-dw-mshc";
 			reg = <0x0 0xfc183000 0x0 0x1000>;
@@ -48,7 +48,7 @@
 			clock-names = "ciu", "biu";
 			fifo-depth = <0x100>;
 			bus-width = <4>;
-			max-frequency = <400000>;
+			max-frequency = <3200000>;	/* G62-2: = ciu (genclk bolucusu 0, CLKDIV=0); 25 MHz/HS/UHS yok */
 			non-removable;
 			no-sd;
 			no-mmc;

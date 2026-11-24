@@ -12,6 +12,13 @@ extern "C" {
   1 ??????????
 *****************************************************************************/
 #include "oam_main.h"
+#include "kk_m3b_log.h"
+
+/* G62-2: SDT islevcisi (sdt_drv) bu portta derlenmiyor. Eskiden NULL dalinda netbuf SIZIYOR, SDT havuzu tukeniyor,
+ * "alloc netbuf stru failed!" seli basliyordu. Simdi netbuf serbest birakilir, dusenler sayilir, kmsg hiz sinirli. */
+atomic_t kk_sdt_dusen = ATOMIC_INIT(0);
+atomic_t kk_sdt_alloc_hata = ATOMIC_INIT(0);
+static struct kk_log_s kk_sdt_log_s[2];
 #include "oam_log.h"
 #include "oam_event.h"
 #include "oam_alarm.h"
@@ -329,7 +336,12 @@ oal_uint32 oam_upload_device_log_to_sdt(oal_uint8 *pc_string, oal_uint16 len)
     pst_skb = oam_alloc_data2sdt(len);
     if (OAL_PTR_NULL == pst_skb)
     {
-        OAL_IO_PRINT("alloc netbuf stru failed!\n");
+        int bast;
+
+        atomic_inc(&kk_sdt_alloc_hata);
+        if (kk_log_izin(&kk_sdt_log_s[1], 3, KK_LOG_ARALIK_S, &bast))
+            OAL_IO_PRINT("alloc netbuf stru failed! (toplam %d, son araliktan bastirilan %d)\n",
+                         atomic_read(&kk_sdt_alloc_hata), bast);
         return OAL_ERR_CODE_PTR_NULL;
     }
 
@@ -582,7 +594,14 @@ oal_uint32 oam_report_data2sdt(oal_netbuf_stru *pst_netbuf,
 
     if (OAL_UNLIKELY(OAL_PTR_NULL == g_st_oam_sdt_func_hook.p_sdt_report_data_func))
     {
-        OAL_IO_PRINT("oam_report_data2sdt p_sdt_report_data_func is NULL. \n");
+        int bast;
+
+        /* sessizce dusur: netbuf'i havuza geri ver (sizinti yok), say, kmsg hiz sinirli */
+        oal_mem_sdt_netbuf_free(pst_netbuf, OAL_TRUE);
+        atomic_inc(&kk_sdt_dusen);
+        if (kk_log_izin(&kk_sdt_log_s[0], 1, KK_LOG_ARALIK_S, &bast))
+            OAL_IO_PRINT("oam_report_data2sdt: SDT islevcisi yok, veri dusuruluyor (toplam %d, son araliktan bastirilan %d)\n",
+                         atomic_read(&kk_sdt_dusen), bast);
         return OAL_FAIL;
     }
 

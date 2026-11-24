@@ -1280,8 +1280,8 @@ static int kk_h_a0(struct kk_h *h)
 	else if (k.surucu)
 		neden = "fn1'e surucu bagli";
 #endif
-	else if (k.saat != 400000 || k.genislik_bit != 4)
-		neden = "ios 400000 Hz 4 bit degil";
+	else if ((k.saat != 400000 && k.saat != 3200000) || k.genislik_bit != 4)	/* G62: 3,2 MHz (ciu, bolucu 0) da kabul */
+		neden = "ios 400000/3200000 Hz 4 bit degil";
 	else if (k.filtre_reddi)
 		neden = "G44 filtre reddi 0 degil";
 	if (neden) {

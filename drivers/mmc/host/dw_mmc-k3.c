@@ -55,6 +55,7 @@
 struct k3_priv {
 	int ctrl_id;
 	u32 cur_speed;
+	u32 genclk_div;	/* Kara Kutu G62-2: GPIO[11:8]; varsayilan GENCLK_DIV */
 	struct regmap	*reg;
 };
 
@@ -256,7 +257,7 @@ static void dw_mci_hs_set_timing(struct dw_mci *host, int timing,
 
 	mci_writel(host, ENABLE_SHIFT, enable_shift);
 
-	reg_value = FIELD_PREP(GPIO_CLK_DIV_MASK, GENCLK_DIV) |
+	reg_value = FIELD_PREP(GPIO_CLK_DIV_MASK, priv->genclk_div) |
 			     FIELD_PREP(GPIO_USE_SAMPLE_DLY_MASK, use_smpl_dly);
 	mci_writel(host, GPIO, (unsigned int)reg_value | GPIO_CLK_ENABLE);
 
@@ -266,6 +267,9 @@ static void dw_mci_hs_set_timing(struct dw_mci *host, int timing,
 
 static int dw_mci_hi3660_init(struct dw_mci *host)
 {
+	struct k3_priv *kpriv = host->priv;
+
+	kpriv->genclk_div = GENCLK_DIV;
 	mci_writel(host, CDTHRCTL, SDMMC_SET_THLD(SDCARD_RD_THRESHOLD,
 		    SDMMC_CARD_RD_THR_EN));
 
@@ -312,8 +316,19 @@ static void dw_mci_hi3660_set_ios(struct dw_mci *host, struct mmc_ios *ios)
 	}
 	actual = clk_get_rate(host->ciu_clk);
 
+	/*
+	 * Kara Kutu G62-2: ciu sabit saatse (DT fixed-clock, set_rate degismez) ve istenen
+	 * saat wanted'a ulasmiyorsa genclk bolucusu (GPIO[11:8], ayni yazmac ve ayni yazma
+	 * sirasi; yalniz alan degeri) ciu/istenen'e dusurulur: 3,2 MHz ciu + 3,2 MHz istek -> 0.
+	 * wanted'a ulasan (gercek) saatte davranis eskisiyle ayni (GENCLK_DIV).
+	 */
+	priv->genclk_div = GENCLK_DIV;
+	if (actual < wanted && actual >= ios->clock)
+		priv->genclk_div = min_t(unsigned long, GENCLK_DIV,
+					 DIV_ROUND_UP(actual, ios->clock) - 1);
+
 	dw_mci_hs_set_timing(host, ios->timing, -1);
-	host->bus_hz = actual / (GENCLK_DIV + 1);
+	host->bus_hz = actual / (priv->genclk_div + 1);
 	host->current_speed = 0;
 	priv->cur_speed = host->bus_hz;
 }

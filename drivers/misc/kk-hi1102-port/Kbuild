@@ -23,3 +23,15 @@ PLAT_FLAGS += $(KK_DARALT)
 WIFI_FLAGS += $(KK_DARALT)
 $(foreach o,$(hi1102_plat-y),$(eval CFLAGS_$(o) += $(PLAT_FLAGS)))
 $(foreach o,$(hi1102_wifi-y),$(eval CFLAGS_$(o) += $(WIFI_FLAGS)))
+# G62-2: gomulu INI depoda DEGIL; derleme zamaninda CONFIG_KK_HI1102_INI (depo disi dosya) -> $(obj)/kk_ini_gomulu.h (O= ise derleme dizini).
+KK_INI_DOSYA := $(patsubst "%",%,$(CONFIG_KK_HI1102_INI))
+ifeq ($(KK_INI_DOSYA),)
+$(error CONFIG_KK_HI1102_INI bos: Hi1102 cfg INI dosyasinin yolu verilmeli (depoda tutulmaz))
+endif
+quiet_cmd_kkini = KKINI   $@
+      cmd_kkini = $(PYTHON3) -I $(src)/kk_ini_uret.py $(KK_INI_DOSYA) $@
+$(obj)/kk_ini_gomulu.h: $(KK_INI_DOSYA) $(src)/kk_ini_uret.py FORCE
+	$(call if_changed,kkini)
+$(obj)/common/customize/hisi_ini.o: $(obj)/kk_ini_gomulu.h
+CFLAGS_common/customize/hisi_ini.o += -I$(obj)
+clean-files += kk_ini_gomulu.h
